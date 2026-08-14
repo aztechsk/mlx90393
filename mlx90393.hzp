@@ -1,0 +1,16 @@
+<!DOCTYPE CrossStudio_Project_File>
+<solution Name="mlx90393" target="8" version="2">
+  <project Name="mlx90393">
+    <configuration
+      Name="Common"
+      c_only_additional_options="-Wall;-Wextra;-Wstrict-prototypes;-Wmissing-prototypes;-Wmissing-declarations;-Wshadow;-Wpointer-arith;-Wbad-function-cast;-Wcast-align;-Wcast-qual;-Wjump-misses-init;-Wno-unused-parameter;-Wundef"
+      c_system_include_directories="$(ProjectDir)/../freertos/src/inc"
+      c_user_include_directories="$(ProjectDir)/../inc;$(ProjectDir)/../sys/src;$(ProjectDir)/../ucdrv/src;$(ProjectDir)/../hal/src/inc"
+      project_directory=""
+      project_type="Library" />
+    <folder Name="src">
+      <file Name="mlx90393.c" file_name="src/mlx90393.c" />
+      <file Name="mlx90393.h" file_name="src/mlx90393.h" />
+    </folder>
+  </project>
+</solution>
