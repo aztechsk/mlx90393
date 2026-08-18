@@ -4,13 +4,15 @@
     <configuration
       Name="Common"
       c_only_additional_options="-Wall;-Wextra;-Wstrict-prototypes;-Wmissing-prototypes;-Wmissing-declarations;-Wshadow;-Wpointer-arith;-Wbad-function-cast;-Wcast-align;-Wcast-qual;-Wjump-misses-init;-Wno-unused-parameter;-Wundef"
-      c_system_include_directories="$(ProjectDir)/../freertos/src/inc"
-      c_user_include_directories="$(ProjectDir)/../inc;$(ProjectDir)/../sys/src;$(ProjectDir)/../ucdrv/src;$(ProjectDir)/../hal/src/inc"
+      c_system_include_directories="$(TargetsDir)/CMSIS_3/CMSIS/Include;$(ProjectDir)/../freertos/src/inc"
+      c_user_include_directories="$(ProjectDir)/../inc;$(ProjectDir)/../sys/src;$(ProjectDir)/../ucdrv/inc;$(ProjectDir)/../ucdrv/src;$(ProjectDir)/../hal/src/inc;$(ProjectDir)/../cmdln/src"
       project_directory=""
       project_type="Library" />
     <folder Name="src">
       <file Name="mlx90393.c" file_name="src/mlx90393.c" />
       <file Name="mlx90393.h" file_name="src/mlx90393.h" />
+      <file Name="mlx90393_stm.c" file_name="src/mlx90393_stm.c" />
+      <file Name="mlx90393_stm.h" file_name="src/mlx90393_stm.h" />
     </folder>
   </project>
 </solution>
