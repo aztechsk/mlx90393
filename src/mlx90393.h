@@ -16,92 +16,107 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
- /**
-  * @file mlx90393.h
-  *
-  * @brief MLX90393 driver interface and raw-to-physical-unit conversion model.
-  *
-  * The MLX90393 returns measurement samples (X/Y/Z magnetic and T temperature) as 16-bit words.
-  * The driver stores these samples in @c uint16_t (see @ref mlx90393_measure_data) exactly as read
-  * from the device. The conversion helpers provided by this driver interpret the raw words and
-  * scale them into integer physical units:
-  *   - Magnetic field: nT (nanoTesla) or uT (microTesla).
-  *   - Temperature: mC (milliCelsius).
-  *
-  * @section mlx90393_conv_cache Conversion cache and what affects scaling.
-  * Magnetic conversion depends on the current sensor configuration. The driver therefore caches
-  * the relevant configuration and derived conversion parameters in the descriptor
-  * (see @ref mlx90393_dsc). Call @ref mlx90393_update_conv_cache() whenever configuration
-  * changes (or after reset), before using conversion helpers.
-  *
-  * Cached parameters that affect magnetic conversion:
-  *   - @c GAIN_SEL and @c RES_X/Y/Z select sensitivity (scale) in uT/LSB (different for XY vs Z).
-  *     The driver derives an integer sensitivity in nT/LSB from the datasheet sensitivity tables
-  *     for HALLCONF=0xC. With @c TCMP_EN disabled, the 25C reference table is used. With
-  *     @c TCMP_EN enabled, the 35C reference table is used because the temperature-compensation
-  *     pivot TREF corresponds to 35C. For @c HALLCONF=0x0 the datasheet specifies a sensitivity
-  *     scaling factor 98/75, which the driver applies when computing the cache.
-  *   - @c TCMP_EN affects the **output coding** (2's complement vs unsigned with a 0uT bias point)
-  *     and enables on-chip sensitivity drift compensation. The driver caches per-axis raw format
-  *     helpers:
-  *       - @c *_is_twos_complement : whether raw words are 2's complement.
-  *       - @c *_zero_lsb           : the raw code corresponding to 0uT when unsigned-coded.
-  *
-  * Note: @c OSR / @c DIG_FILT influence conversion time and noise, but not the magnetic scale factor.
-  *
-  * @section mlx90393_mag_conv Magnetic conversion (raw -> nT / uT).
-  * The conversion is performed in two steps:
-  *
-  * 1) Convert raw @c uint16_t into a signed "LSB" code:
-  *    - If the axis is 2's complement coded:
-  *        @code
-  *        lsb = (int16_t) raw;
-  *        @endcode
-  *    - If the axis is unsigned-coded with a 0uT bias point:
-  *        @code
-  *        diff = (int32_t) raw - zero_lsb;
-  *        // wrap diff to the signed 16-bit range to handle negative values in modular arithmetic.
-  *        if (diff >  32767) diff -= 65536;
-  *        if (diff < -32768) diff += 65536;
-  *        lsb = diff;
-  *        @endcode
-  *
-  * 2) Scale the signed LSB code into field units:
-  *    - nT:
-  *        @code
-  *        out_nt = lsb * sens_nt_per_lsb;
-  *        @endcode
-  *    - uT:
-  *        @code
-  *        out_ut = round(out_nt / 1000.0);
-  *        @endcode
-  *    The driver implementation uses integer arithmetic with rounding to the nearest integer.
-  *
-  * @section mlx90393_temp_conv Temperature conversion (raw -> mC)
-  * Temperature conversion is based on the datasheet constants:
-  *   - @c T25  : raw code at 25C
-  *   - @c TRES : temperature resolution in LSB/C
-  *
-  * The driver computes:
-  *   @code
-  *   // delta in raw codes from 25C reference
-  *   d = (int32_t) raw_t - T25;
-  *
-  *   // T in mC, using integer math (TRES = 45.2 LSB/C => 452/10)
-  *   out_mC = 25000 + round(d * 10000 / 452);
-  *   @endcode
-  *
-  * @section mlx90393_conv_notes Practical notes.
-  * - Sensitivities used are typical table values: the 25C reference with @c TCMP_EN disabled
-  *   and the 35C compensation-pivot reference with @c TCMP_EN enabled. Absolute accuracy depends
-  *   on device tolerances, temperature drift, and any user calibration/offset strategy.
-  * - When @c TCMP_EN is enabled, the sensor performs on-chip sensitivity drift compensation; the
-  *   output coding and 0uT bias point depend on @c RES as documented in the datasheet.
-  */
+/**
+ * @file mlx90393.h
+ *
+ * @brief MLX90393 driver interface and raw-to-physical-unit conversion model.
+ *
+ * The MLX90393 returns measurement samples (X/Y/Z magnetic and T temperature) as 16-bit words.
+ * The driver stores these samples in @c uint16_t (see @ref mlx90393_measure_data) exactly as read
+ * from the device. SPI communication follows the MLX90393 command/status protocol; this module
+ * does not configure the measurement schedule or use the DRDY interrupt itself. The conversion
+ * helpers interpret raw words and scale them into integer physical units:
+ *   - Magnetic field: nT (nanoTesla) or uT (microTesla).
+ *   - Temperature: mC (milliCelsius).
+ *
+ * @section mlx90393_conv_cache Conversion cache and what affects scaling.
+ * Magnetic conversion depends on the current sensor configuration. The driver therefore caches
+ * the relevant configuration and derived conversion parameters in the descriptor
+ * (see @ref mlx90393_dsc). Call @ref mlx90393_update_conv_cache() after configuring the
+ * sensor and whenever the scaling-relevant configuration changes. A successful register write
+ * does not automatically invalidate or refresh the cache. Initialization, soft reset and memory
+ * recall invalidate the cache. Magnetic conversion requires a valid cache.
+ *
+ * Cached parameters that affect magnetic conversion:
+ *   - @c GAIN_SEL and @c RES_X/Y/Z select sensitivity (scale) in uT/LSB (different for XY vs Z).
+ *     The driver derives an integer sensitivity in nT/LSB from the datasheet sensitivity tables
+ *     for HALLCONF=0xC. With @c TCMP_EN disabled, the 25C reference table is used. With
+ *     @c TCMP_EN enabled, the 35C reference table is used because the temperature-compensation
+ *     pivot TREF corresponds to 35C. For @c HALLCONF=0x0 the datasheet specifies a sensitivity
+ *     scaling factor 98/75, which the driver applies when computing the cache. Other HALLCONF
+ *     values are not rejected by the code, but have no dedicated sensitivity scaling.
+ *   - @c TCMP_EN affects the **output coding** (2's complement vs unsigned with a 0uT bias point)
+ *     and enables on-chip sensitivity drift compensation. The driver caches per-axis raw format
+ *     helpers:
+ *       - @c *_is_twos_complement : whether raw words are 2's complement.
+ *       - @c *_zero_lsb           : the raw code corresponding to 0uT when unsigned-coded.
+ *
+ * Note: @c OSR / @c DIG_FILT influence conversion time and noise, but not the magnetic scale factor.
+ * The conversion helpers use typical datasheet sensitivity, not per-device calibration.
+ *
+ * @section mlx90393_mag_conv Magnetic conversion (raw -> nT / uT).
+ * The conversion is performed in two steps:
+ *
+ * 1) Convert raw @c uint16_t into a signed "LSB" code:
+ *    - If the axis is 2's complement coded:
+ *        @code
+ *        lsb = (int16_t) raw;
+ *        @endcode
+ *    - If the axis is unsigned-coded with a 0uT bias point:
+ *        @code
+ *        diff = (int32_t) raw - zero_lsb;
+ *        // wrap diff to the signed 16-bit range to handle negative values in modular arithmetic.
+ *        if (diff >  32767) diff -= 65536;
+ *        if (diff < -32768) diff += 65536;
+ *        lsb = diff;
+ *        @endcode
+ *
+ * 2) Scale the signed LSB code into field units:
+ *    - nT:
+ *        @code
+ *        out_nt = lsb * sens_nt_per_lsb;
+ *        @endcode
+ *    - uT:
+ *        @code
+ *        out_ut = round(out_nt / 1000.0);
+ *        @endcode
+ *    The driver implementation uses integer arithmetic with rounding to the nearest integer.
+ *
+ * @section mlx90393_temp_conv Temperature conversion (raw -> mC)
+ * Temperature conversion is based on the datasheet constants:
+ *   - @c T25  : raw code at 25C
+ *   - @c TRES : temperature resolution in LSB/C
+ *
+ * The driver computes:
+ *   @code
+ *   // delta in raw codes from 25C reference
+ *   d = (int32_t) raw_t - T25;
+ *
+ *   // T in mC, using integer math (TRES = 45.2 LSB/C => 452/10)
+ *   out_mC = 25000 + round(d * 10000 / 452);
+ *   @endcode
+ *
+ * @section mlx90393_driver_context Execution context
+ * All SPI operations are synchronous through @c spi_hal_xfer(). The driver may also perform
+ * microsecond delays or FreeRTOS task delays. It is intended for initialization/task context,
+ * not for ISR use. The driver does not serialize access by multiple tasks to one sensor handle;
+ * the caller must prevent overlapping commands and configuration updates.
+ *
+ * Reference: Melexis MLX90393 datasheet, revision 012 (18 November 2025), sections 11-16.
+ *
+ * @section mlx90393_conv_notes Practical notes.
+ * - Sensitivities used are typical table values: the 25C reference with @c TCMP_EN disabled
+ *   and the 35C compensation-pivot reference with @c TCMP_EN enabled. Absolute accuracy depends
+ *   on device tolerances, temperature drift, and any user calibration/offset strategy.
+ * - When @c TCMP_EN is enabled, the sensor performs on-chip sensitivity drift compensation; the
+ *   output coding and 0uT bias point depend on @c RES as documented in the datasheet.
+ */
 
 #ifndef MLX90393_H
 #define MLX90393_H
 
+#include <stdint.h>
+#include <gentyp.h>
 #include "spi_hal.h"
 
 /**
@@ -128,16 +143,18 @@ enum mlx90393_measure_mode {
 	/**
 	 * @brief Burst mode measurement (SB command).
 	 *
-	 * Starts a burst acquisition according to the sensor burst configuration
-	 * (e.g. BURST_SEL / enabled channels). Typically used for continuous or
-	 * repeated sampling workflows.
+	 * Starts repeated burst acquisitions (SB). The command channel mask
+	 * selects the converted quantities; a zero mask selects BURST_SEL in
+	 * sensor RAM. BURST_DATA_RATE (BDR) controls the acquisition interval:
+	 * BDR=0 runs without a programmed inactive interval, while BDR=1..63
+	 * inserts an interval in steps of 20 ms between burst cycles.
 	 */
 	MLX90393_MEASURE_MODE_BURST,
 	/**
 	 * @brief Wake-on-change / wake measurement (SW command).
 	 *
-	 * Issues a wake measurement intended to be used with wake-on-change / low-power
-	 * operation. The exact behavior depends on sensor configuration.
+	 * Enters wake-up-on-change mode (SW). Channels and wake thresholds are
+	 * determined by the command mask and sensor register configuration.
 	 */
 	MLX90393_MEASURE_MODE_WAKE,
 	/**
@@ -161,9 +178,9 @@ enum mlx90393_reg_adr {
 	MLX90393_CFG0_REG,
 	/** @brief Configuration register 1 (advanced measurement settings). */
 	MLX90393_CFG1_REG,
-	/** @brief Configuration register 2 (interrupt, burst and system settings). */
+	/** @brief Configuration register 2 (OSR, DIG_FILT, RES_X/Y/Z and OSR2). */
 	MLX90393_CFG2_REG,
-	/** @brief Sensitivity / temperature compensation register (gain/TC settings). */
+	/** @brief Temperature sensitivity compensation coefficients SENS_TC_HT/LT (gain is in CFG0). */
 	MLX90393_SENS_TC_REG,
 	/** @brief X-axis offset register (offset compensation). */
 	MLX90393_OFFSET_X_REG,
@@ -246,8 +263,10 @@ enum mlx90393_reg_adr {
 /**
  * BURST_SEL - Defines the MDATA in burst mode if SB command argument = 0 (default=0x0).
  */
-#define mlx90393_cfg1_burst_sel_zyxt_s(val) (MLX90393_CFG1_BURST_SEL_ZYXT_MSK & ((val) << MLX90393_CFG1_BURST_SEL_ZYXT_POS))
-#define mlx90393_cfg1_burst_sel_zyxt_r(val) ((MLX90393_CFG1_BURST_SEL_ZYXT_MSK & (val)) >> MLX90393_CFG1_BURST_SEL_ZYXT_POS)
+#define mlx90393_cfg1_burst_sel_zyxt_s(val) \
+	(MLX90393_CFG1_BURST_SEL_ZYXT_MSK & ((val) << MLX90393_CFG1_BURST_SEL_ZYXT_POS))
+#define mlx90393_cfg1_burst_sel_zyxt_r(val) \
+	((MLX90393_CFG1_BURST_SEL_ZYXT_MSK & (val)) >> MLX90393_CFG1_BURST_SEL_ZYXT_POS)
 
 /**
  * TCMP_EN - Enables on-chip sensitivity drift compensation (default=0x0).
@@ -335,8 +354,10 @@ typedef struct mlx90393_dsc *mlx90393;
  * @brief MLX90393 driver descriptor (handle).
  *
  * The public handle type @ref mlx90393 is a pointer to this structure.
- * The structure is exposed to allow static allocation, but its fields should be
- * treated as private to the driver (except for initialization).
+ * The structure is exposed to allow static allocation. Before initialization,
+ * the caller sets @c spi.cfg (SPI controller, mode, speed, chip select, etc.).
+ * Other fields are driver-owned; the conversion fields are populated by
+ * @ref mlx90393_update_conv_cache(). A system-lifetime descriptor is supported.
  */
 struct mlx90393_dsc {
 	struct spi_hal_dev spi;
@@ -372,12 +393,14 @@ struct mlx90393_dsc {
  * @brief Measurement output container.
  *
  * Holds raw measurement samples returned by the sensor for each requested
- * channel. Validity flags indicate which fields contain updated data.
+ * channel. Before each read, the driver clears the entire structure. It then
+ * sets a validity flag for every requested and successfully decoded channel;
+ * unrequested channels remain zero with their validity flags cleared.
  *
  * @note All samples are returned in **raw** format as @c uint16_t exactly as read
  *       from the device. The application must convert/interpret them according
  *       to the current sensor configuration (e.g. 2's complement vs unsigned,
- *       resolution/OSR, gain/sensitivity scaling, temperature conversion, etc.).
+ *       resolution, gain/sensitivity scaling, temperature conversion, etc.).
  */
 struct mlx90393_measure_data {
 	boolean_t x_valid;
@@ -391,180 +414,225 @@ struct mlx90393_measure_data {
 };
 
 /**
- * @brief Initialize the MLX90393 driver instance.
+ * @brief Initialize one MLX90393 handle and its SPI HAL device.
  *
- * Initializes the underlying SPI HAL device referenced by @p mlx.
- * This function does not configure the SPI bus parameters (mode/clock/word size);
- * the upper layer is responsible for proper SPI configuration.
+ * Calls @c spi_hal_dev_init() and invalidates the conversion cache. This
+ * function does not reset the sensor or write its configuration registers.
  *
- * @param mlx  Sensor handle/instance.
+ * @param[in,out] mlx Caller-owned, initialized descriptor with valid @c spi.cfg.
+ * @pre Configure @c mlx->spi.cfg before calling; invoke once per device.
+ * @note Initialization may create SPI HAL resources. Call from startup/task
+ *       context, not from an ISR. Device lifetime is managed by the caller.
  */
 void init_mlx90393(mlx90393 mlx);
 
 /**
- * @brief Start a measurement (single/burst) for selected axes/temperature.
+ * @brief Issue a sensor measurement-mode command (SB, SW or SM).
  *
- * @param mlx      Sensor handle/instance.
- * @param mode     Measurement mode (see @ref mlx90393_measure_mode).
- * @param measure  Channel bitmask (X/Y/Z/T) as defined by the driver.
+ * Transmits the selected command with the low four channel-selection bits
+ * (bit 3=Z, 2=Y, 1=X, 0=T). A zero channel mask requests BURST_SEL from
+ * sensor RAM, as specified by the MLX90393 command protocol. The function
+ * checks the ERROR status bit and the expected measurement-mode status bit.
+ * It starts the acquisition but does not wait for data readiness.
  *
- * @return 0 on success, otherwise a negative error code (typically propagated from SPI HAL).
- *
- * @pre @p measure and @p mode are valid per the driver contract.
+ * @param[in,out] mlx Initialized sensor handle.
+ * @param[in] mode One of @ref mlx90393_measure_mode.
+ * @param[in] measure Channel mask (MLX90393_MEASURE_*); bits above bit 3 are ignored.
+ * @return 0 if the command is accepted, -EHW on sensor status/mode error,
+ *         otherwise the negative SPI HAL error code.
+ * @pre The sensor is configured and @p mode is valid. An invalid mode is fatal
+ *      via @c crit_err_exit(BAD_PARAMETER).
+ * @note Synchronous SPI operation; task context only; no internal locking.
  */
 int mlx90393_start_measure(mlx90393 mlx, enum mlx90393_measure_mode mode, unsigned int measure);
 
 /**
- * @brief Read measured data for selected channels.
+ * @brief Read the most recent measurement for the requested channels (RM).
  *
- * Reads measurement results for channels specified by @p measure and stores them into @p data.
- * Fields for non-requested channels remain zero.
+ * Sends RM with the selected channel mask and reads one status byte plus
+ * two bytes per channel. The sensor returns enabled quantities in T, X, Y,
+ * Z order, most-significant byte first. The function verifies the ERROR
+ * bit and the D1:D0 response-length encoding, then populates the raw values
+ * and their validity flags. The destination is zeroed before the SPI call,
+ * including on SPI/status failure. This function does not wait for DRDY.
  *
- * @param  mlx      Sensor handle/instance.
- * @param  measure  Channel bitmask (X/Y/Z/T) as defined by the driver.
- * @param  data     Output structure holding measurement results.
- *
- * @return 0 on success, otherwise a negative error code.
- *
- * @note Sign/format interpretation depends on sensor configuration (e.g. 2's complement vs unsigned).
+ * @param[in,out] mlx Initialized sensor handle.
+ * @param[in] measure Nonzero combination of MLX90393_MEASURE_* matching the acquisition.
+ * @param[out] data Caller-owned structure to receive raw 16-bit samples.
+ * @return 0 on successful SPI read and decoding, -EHW on invalid sensor
+ *         status/response length, otherwise the negative SPI HAL error code.
+ * @pre Call only after the measurement is ready; supply a valid @p data pointer.
+ * @note Blocking DMA SPI transfer; task context only; no internal locking.
  */
 int mlx90393_read_measure_data(mlx90393 mlx, unsigned int measure, struct mlx90393_measure_data *data);
 
 /**
- * @brief Exit the current sensor mode (enter idle).
+ * @brief Exit the active sensor measurement mode (EX command).
  *
- * @param mlx  Sensor handle/instance.
+ * Sends EX and, on success, waits 1500 us before returning.
  *
- * @return 0 on success, otherwise a negative error code.
+ * @param[in,out] mlx Initialized sensor handle.
+ * @return 0 on success, -EHW for a sensor error, or a negative SPI HAL code.
+ * @note Blocking SPI operation and delay; task context only.
  */
 int mlx90393_exit_mode(mlx90393 mlx);
 
 /**
- * @brief Recall configuration from NVRAM into working registers (RAM).
+ * @brief Recall nonvolatile configuration into sensor working RAM (HR).
  *
- * @param mlx  Sensor handle/instance.
+ * Marks the conversion cache invalid before issuing the command. Read the
+ * resulting configuration again with @ref mlx90393_update_conv_cache()
+ * before converting magnetic samples.
  *
- * @return 0 on success, otherwise a negative error code.
+ * @param[in,out] mlx Initialized sensor handle.
+ * @return 0 on success, -EHW for a sensor error, or a negative SPI HAL code.
+ * @note Blocking SPI operation; task context only.
  */
 int mlx90393_memory_recall(mlx90393 mlx);
 
 /**
- * @brief Store current configuration from working registers (RAM) into NVRAM.
+ * @brief Store the sensor working configuration into NVRAM (HS).
  *
- * @param mlx  Sensor handle/instance.
+ * After a successful HS command, waits at least 15 ms before returning to
+ * allow NVRAM storage to complete (rounded-up FreeRTOS ticks plus one
+ * extra tick for the scheduler tick phase). The caller must not issue
+ * another sensor command until this function returns. It does not modify
+ * the driver's conversion cache.
  *
- * @return 0 on success, otherwise a negative error code.
- *
- * @warning Do not remove power during the store operation.
- * @warning Store reliability may depend on supply voltage (see datasheet).
+ * @param[in,out] mlx Initialized sensor handle.
+ * @return 0 on success, -EHW for a sensor error, or a negative SPI HAL code.
+ * @warning Reliable NVRAM storage requires VDD >= 3.3 V during HS. Do not
+ *          remove power while storing. HS is intended for calibration, not
+ *          repeated application writes; minimize NVRAM write cycles.
+ *          Ordinary WR commands affect volatile RAM without this limit.
+ * @note Blocking SPI operation followed by FreeRTOS task delay; not ISR-safe.
  */
 int mlx90393_memory_store(mlx90393 mlx);
 
 /**
- * @brief Read a 16-bit sensor register.
+ * @brief Read one 16-bit MLX90393 RAM register (RR command).
  *
- * @param mlx   Sensor handle/instance.
- * @param adr   Register address.
- * @param data  Output register value.
+ * Sends the register address shifted left by two bits, then reads the
+ * status byte and two data bytes in big-endian order. Verifies ERROR and
+ * that D1:D0 indicates exactly two data bytes.
  *
- * @return 0 on success, otherwise a negative error code.
- *
- * @note Blocking call.
+ * @param[in,out] mlx Initialized sensor handle.
+ * @param[in] adr Register address from @ref mlx90393_reg_adr.
+ * @param[out] data Caller-provided location for the register value, written on success.
+ * @return 0 on success, -EHW on sensor status/length error, or a negative SPI HAL code.
+ * @note Blocking SPI/DMA operation; task context only; no internal locking.
  */
 int mlx90393_reg_read(mlx90393 mlx, enum mlx90393_reg_adr adr, uint16_t *data);
 
 /**
- * @brief Write a 16-bit value to a sensor register.
+ * @brief Write one 16-bit MLX90393 RAM register (WR command).
  *
- * @param mlx   Sensor handle/instance.
- * @param adr   Register address.
- * @param data  Value to write.
+ * Sends the register value in big-endian order followed by the register
+ * address shifted left by two bits; checks the status ERROR bit.
  *
- * @return 0 on success, otherwise a negative error code.
+ * @param[in,out] mlx Initialized sensor handle.
+ * @param[in] adr Register address from @ref mlx90393_reg_adr.
+ * @param[in] data New 16-bit register value.
+ * @return 0 on success, -EHW on sensor status error, or a negative SPI HAL code.
+ * @warning A successful write does not invalidate or update the driver's
+ *          conversion cache. After changing CFG0, CFG1 or CFG2, call
+ *          @ref mlx90393_update_conv_cache() before magnetic conversion.
+ * @note Blocking SPI/DMA operation; task context only; no internal locking.
  */
 int mlx90393_reg_write(mlx90393 mlx, enum mlx90393_reg_adr adr, uint16_t data);
 
 /**
- * @brief Probe the sensor (communication/link test).
+ * @brief Test SPI communication using the sensor's USER1 RAM register.
  *
- * The implementation typically performs a read/write operation on a selected USER register
- * and verifies that SPI communication works.
+ * Saves USER1, writes test pattern 0xABCD, reads it back, and restores the
+ * saved value only if the preceding operations succeed. An interrupted or
+ * failed probe may leave USER1 changed; this is not a nondestructive read.
  *
- * @param mlx  Sensor handle/instance.
- *
- * @return 0 on success, otherwise a negative error code.
- *
- * @warning This function modifies the USER1 register in chip RAM.
+ * @param[in,out] mlx Initialized sensor handle.
+ * @return 0 on successful verification and restore, -EHW on pattern mismatch
+ *         or sensor status error, or a negative SPI HAL error code.
+ * @note Blocking SPI/DMA operations; task context only; no internal locking.
  */
 int mlx90393_probe(mlx90393 mlx);
 
 /**
- * @brief Perform a sensor soft reset.
+ * @brief Soft-reset the MLX90393 and invalidate its conversion cache.
  *
- * Resets the internal sensor state; typically restores default values of volatile registers.
+ * Sends EX, waits 1500 us, sends RT, waits at least 5 ms (FreeRTOS
+ * tick-rounded delay with one additional tick), then sends EX again.
+ * Checks for sensor ERROR and requires the reset-status (RS) indication
+ * on at least one of the status responses inspected after RT.
  *
- * @param mlx  Sensor handle/instance.
- *
- * @return 0 on success, otherwise a negative error code.
+ * @param[in,out] mlx Initialized sensor handle.
+ * @return 0 on success, -EHW on status/reset-indication error, or a negative SPI HAL code.
+ * @note Blocking SPI plus microsecond and FreeRTOS task delays; not ISR-safe.
+ * @post Reconfigure the sensor and call @ref mlx90393_update_conv_cache()
+ *       before further magnetic conversion.
  */
 int mlx90393_soft_reset(mlx90393 mlx);
 
 /**
- * @brief Read CFG registers and update cached conversion parameters.
+ * @brief Read CFG0, CFG1 and CFG2 and rebuild the conversion cache.
  *
- * @param mlx  Sensor handle/instance.
+ * Caches HALLCONF, GAIN_SEL, TCMP_EN, RES_X/Y/Z, OSR, DIG_FILT and OSR2;
+ * derives per-axis integer sensitivity in nT/LSB and signed/offset coding.
+ * Sensitivity uses the datasheet's 25 C table with TCMP_EN=0 or 35 C table
+ * with TCMP_EN=1. For HALLCONF=0x0 it scales by 98/75; other HALLCONF values
+ * are not rejected but use the 0xC table without adjustment.
  *
- * @return 0 on success, otherwise a negative error code.
+ * @param[in,out] mlx Initialized sensor handle and conversion cache destination.
+ * @return 0 when all three registers were read and the cache is valid;
+ *         -EHW or a negative SPI HAL code on a read error.
+ * @pre Sensor RAM configuration must already contain the desired settings.
+ * @note Invalidates the cache at entry, including on failure. TCMP_EN=1 with
+ *       RES_X/Y/Z greater than 1 is rejected fatally during format setup.
+ * @note Blocking SPI/DMA operation; task context only; no internal locking.
  */
 int mlx90393_update_conv_cache(mlx90393 mlx);
 
 /**
- * @brief Convert raw magnetic sample to nanoTesla (nT).
+ * @brief Convert one raw magnetic sample into signed nanotesla (nT).
  *
- * Converts a single raw 16-bit sample read from the sensor into magnetic field
- * in nanoTesla, using conversion parameters cached in @p mlx (gain, resolution,
- * TCMP format, zero-point).
+ * Uses the cached axis sensitivity and output coding to compute nT from
+ * the sensor's 16-bit sample. This is based on typical datasheet sensitivity;
+ * it does not subtract a measured zero-field offset or calibrate the sensor.
  *
- * @param  mlx     Sensor handle/instance (conversion cache source).
- * @param  axis    Axis selector. Must be one of: @ref MLX90393_MEASURE_X,
- *                     @ref MLX90393_MEASURE_Y, @ref MLX90393_MEASURE_Z.
- * @param  raw     Raw 16-bit sample as returned by the sensor.
- * @param  out_nt  Converted magnetic field in nanoTesla (nT).
- *
- * @pre @ref mlx90393_update_conv_cache() has been called successfully before this conversion.
- *
- * @note Rounding is determined by integer arithmetic; output is signed.
+ * @param[in] mlx Sensor handle containing an up-to-date conversion cache.
+ * @param[in] axis One of MLX90393_MEASURE_X, _Y or _Z (single axis only).
+ * @param[in] raw Raw 16-bit sample for that axis.
+ * @param[out] out_nt Caller-owned destination for the signed nT result.
+ * @pre @ref mlx90393_update_conv_cache() must have succeeded for the current
+ *      configuration. Invalid cache or axis is fatal via @c crit_err_exit().
+ * @note Integer calculation; no I/O or blocking. Not a calibrated result.
  */
 void mlx90393_mag_raw_to_nt(mlx90393 mlx, unsigned int axis, uint16_t raw, int32_t *out_nt);
 
 /**
- * @brief Convert raw magnetic sample to microTesla (uT).
+ * @brief Convert one raw magnetic sample into signed microtesla (uT).
  *
- * Converts a raw 16-bit sample to microTesla by first converting to nT and then
- * rounding to the nearest uT.
+ * First converts to nT, then rounds to the nearest integer uT, discarding
+ * sub-microtesla resolution. Half values are rounded away from zero.
  *
- * @param  mlx     Sensor handle/instance (conversion cache source).
- * @param  axis    Axis selector. Must be one of: @ref MLX90393_MEASURE_X,
- *                     @ref MLX90393_MEASURE_Y, @ref MLX90393_MEASURE_Z.
- * @param  raw     Raw 16-bit sample as returned by the sensor.
- * @param  out_ut  Converted magnetic field in microTesla (uT).
- *
- * @pre @ref mlx90393_update_conv_cache() has been called successfully before this conversion.
- *
- * @note Output is signed. Conversion uses rounding (nT -> uT).
+ * @param[in] mlx Sensor handle containing an up-to-date conversion cache.
+ * @param[in] axis One of MLX90393_MEASURE_X, _Y or _Z (single axis only).
+ * @param[in] raw Raw 16-bit sample for that axis.
+ * @param[out] out_ut Caller-owned destination for the signed uT result.
+ * @pre @ref mlx90393_update_conv_cache() must have succeeded for the current
+ *      configuration. Invalid cache or axis is fatal via @c crit_err_exit().
+ * @note Integer calculation; no I/O or blocking. Not a calibrated result.
  */
 void mlx90393_mag_raw_to_ut(mlx90393 mlx, unsigned int axis, uint16_t raw, int32_t *out_ut);
 
 /**
- * @brief Convert raw temperature sample to milli-degrees Celsius (mC).
+ * @brief Convert raw temperature to integer milli-degrees Celsius (mC).
  *
- * Converts a raw temperature sample (as returned by the sensor when measuring T)
- * into milli-degrees Celsius using the sensor's typical calibration constants.
+ * Uses typical sensor calibration constants T25=46244 and TRES=45.2 LSB/C:
+ * T(mC) = 25000 + round((raw_t - 46244) * 10000 / 452).
+ * The calculation uses signed 64-bit intermediate arithmetic.
  *
- * @param  raw_t    Raw 16-bit temperature sample as returned by the sensor.
- * @param  out_mc   Temperature in milli-degrees Celsius (mC).
- *
- * @note This conversion uses integer arithmetic and rounding.
+ * @param[in] raw_t Unsigned 16-bit temperature sample from the sensor.
+ * @param[out] out_mc Caller-owned destination for temperature in 0.001 C.
+ * @note Does not access the device or depend on the conversion cache.
  */
 void mlx90393_temp_raw_to_mc(uint16_t raw_t, int32_t *out_mc);
 

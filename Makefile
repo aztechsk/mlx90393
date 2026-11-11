@@ -9,7 +9,8 @@ TARGET  := $(OUT)/$(PROJECT).a
 
 SRCS := \
 	src/mlx90393.c \
-	src/mlx90393_stm.c
+	src/mlx90393_stm.c \
+	src/mlx90393_stm_single.c
 
 OBJS := $(addprefix $(OUT)/,$(notdir $(SRCS:.c=.o)))
 DEPS := $(OBJS:.o=.d)

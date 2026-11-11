@@ -13,6 +13,8 @@
       <file Name="mlx90393.h" file_name="src/mlx90393.h" />
       <file Name="mlx90393_stm.c" file_name="src/mlx90393_stm.c" />
       <file Name="mlx90393_stm.h" file_name="src/mlx90393_stm.h" />
+      <file Name="mlx90393_stm_single.c" file_name="src/mlx90393_stm_single.c" />
+      <file Name="mlx90393_stm_single.h" file_name="src/mlx90393_stm_single.h" />
     </folder>
   </project>
 </solution>

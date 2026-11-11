@@ -8,7 +8,6 @@
 #include <FreeRTOS.h>
 #include <task.h>
 #include <semphr.h>
-#include <queue.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -32,7 +31,8 @@
 #define RESET_STM_TMO_MS 5000U
 #define DLY_AFTER_INTR_US 140U
 #if MLX90393_REPORT_FN == 1
-#define MLX90393_REPORT_BUF_SIZE sizeof("MLX90393 si [999]: X=-2147483648 Y=-2147483648 Z=-2147483648 uT T=-2147483.648 C\n")
+#define MLX90393_REPORT_BUF_SIZE \
+	sizeof("MLX90393 si [999]: X=-2147483.648 Y=-2147483.648 Z=-2147483.648 uT T=-2147483.648 C\n")
 #endif
 
 /* Target BURST measurement rate in Hz (used to derive the BDR code / TINTERVAL). */
@@ -42,9 +42,13 @@
 /* Channel selection bitfield for SB/RM: b3=Z, b2=Y, b1=X, b0=T (e.g. 0x0F = XYZT). */
 #define MLX90393_BURST_SEL_ZYXT 0x0FU
 /* Magnetic OSR: ADC oversampling; higher = lower noise, but longer conversion time. */
+#ifndef MLX90393_OSR
 #define MLX90393_OSR            0U
+#endif
 /* Digital filter setting; higher = lower noise, but longer conversion time. */
+#ifndef MLX90393_DIG_FILT
 #define MLX90393_DIG_FILT       4U
+#endif
 /* Magnetic full-scale range presets (approx. XY full-scale at 25 C,
  * TCMP=0, HALLCONF=0xC).
  * Note: Z sensitivity differs from XY; these presets target XY range. */
@@ -77,11 +81,49 @@
 #error "Invalid MLX90393_RANGE_PROFILE (use MLX90393_RANGE_5MT/25MT/50MT)"
 #endif
 /* Temperature OSR: temperature ADC oversampling; impacts temperature conversion time. */
+#ifndef MLX90393_OSR2
 #define MLX90393_OSR2           0U
+#endif
 /* Temperature compensation enable. */
+#ifndef MLX90393_TCMP_EN
 #define MLX90393_TCMP_EN        0U
+#endif
 /* Hall plate spinning rate adjustment. */
 #define MLX90393_HALCONF        0xCU
+/* Reject unsupported field values and HALLCONF=0xC filter combinations. */
+#if MLX90393_OSR < 0 || MLX90393_OSR > 3
+#error "MLX90393_OSR must be in the range 0..3"
+#endif
+#if MLX90393_DIG_FILT < 0 || MLX90393_DIG_FILT > 7
+#error "MLX90393_DIG_FILT must be in the range 0..7"
+#endif
+#if MLX90393_OSR2 < 0 || MLX90393_OSR2 > 3
+#error "MLX90393_OSR2 must be in the range 0..3"
+#endif
+#if MLX90393_TCMP_EN != 0
+#error "MLX90393_INTR_MODE supports only MLX90393_TCMP_EN=0"
+#endif
+#ifndef MLX90393_HARDIRON_EN
+#error "MLX90393_HARDIRON_EN must be defined in sysconf.h"
+#endif
+#if MLX90393_HARDIRON_EN != 0 && MLX90393_HARDIRON_EN != 1
+#error "MLX90393_HARDIRON_EN must be 0 or 1"
+#endif
+#if MLX90393_HARDIRON_EN == 1
+#if !defined(MLX90393_HARDIRON_X_NT) || !defined(MLX90393_HARDIRON_Y_NT) || \
+    !defined(MLX90393_HARDIRON_Z_NT)
+#error "MLX90393_HARDIRON_X/Y/Z_NT must be defined"
+#endif
+#if MLX90393_HARDIRON_X_NT < INT32_MIN || MLX90393_HARDIRON_X_NT > INT32_MAX || \
+    MLX90393_HARDIRON_Y_NT < INT32_MIN || MLX90393_HARDIRON_Y_NT > INT32_MAX || \
+    MLX90393_HARDIRON_Z_NT < INT32_MIN || MLX90393_HARDIRON_Z_NT > INT32_MAX
+#error "MLX90393_HARDIRON_X/Y/Z_NT must fit int32_t"
+#endif
+#endif
+#if (MLX90393_OSR == 0 && MLX90393_DIG_FILT <= 1) || \
+    (MLX90393_OSR == 1 && MLX90393_DIG_FILT == 0)
+#error "MLX90393_OSR/DIG_FILT combination is invalid for HALLCONF=0xC"
+#endif
 #define MLX90393_POW2(x)             (1U << (x))
 #define MLX90393_SEL_HAS_T(sel)      (((sel) & 0x1U) ? 1U : 0U)
 #define MLX90393_SEL_HAS_X(sel)      (((sel) & 0x2U) ? 1U : 0U)
@@ -90,7 +132,8 @@
 /* Number of magnetic axes included (excluding temperature); used in burst conversion time estimation. */
 #define MLX90393_MAG_AXES_COUNT(sel) (MLX90393_SEL_HAS_X(sel) + MLX90393_SEL_HAS_Y(sel) + MLX90393_SEL_HAS_Z(sel))
 /* Typical conversion time per magnetic axis (us); depends on OSR and DIG_FILT. */
-#define MLX90393_TCONVM_US           (67U + 64U * MLX90393_POW2(MLX90393_OSR)  * (2U + MLX90393_POW2(MLX90393_DIG_FILT)))
+#define MLX90393_TCONVM_US           (67U + 64U * MLX90393_POW2(MLX90393_OSR) * \
+	(2U + MLX90393_POW2(MLX90393_DIG_FILT)))
 /* Typical temperature conversion time (us); depends on OSR2. */
 #define MLX90393_TCONVT_US           (67U + 192U * MLX90393_POW2(MLX90393_OSR2))
 /* Typical internal overhead times (us) for entering ACTIVE and finishing a conversion cycle. */
@@ -99,29 +142,35 @@
 /* Estimated total burst conversion time (us): ACTIVE + N*TCONVM + (T?)*TCONVT + END. */
 #define MLX90393_TCONV_BURST_US(sel) (MLX90393_TACTIVE_US + MLX90393_MAG_AXES_COUNT(sel) * MLX90393_TCONVM_US + \
         MLX90393_SEL_HAS_T(sel) * MLX90393_TCONVT_US + MLX90393_TCONV_END_US)
-/* Theoretical maximum ODR for the given selection when TINTERVAL=0 (continuous burst), in Hz. */
-#define MLX90393_MAX_ODR_HZ(sel)     (1000000U / MLX90393_TCONV_BURST_US(sel))
 /* Target measurement period derived from BURST_RATE_HZ (us between burst cycle starts). */
-#define MLX90393_TARGET_PERIOD_US    (1000000U / (MLX90393_BURST_RATE_HZ))
+#define MLX90393_TARGET_PERIOD_US    (1000000U / MLX90393_BURST_RATE_HZ)
 /* Desired TINTERVAL (us); saturates to 0 if the conversion time exceeds the target period. */
 #define MLX90393_TINTERVAL_US(sel)   ((MLX90393_TARGET_PERIOD_US > MLX90393_TCONV_BURST_US(sel)) ? \
                                       (MLX90393_TARGET_PERIOD_US - MLX90393_TCONV_BURST_US(sel)) : 0U)
-/* Convert TINTERVAL to the BDR code (20 ms steps).
- * Use ceil() to avoid exceeding the target ODR, and clamp to the 6-bit HW field (0..0x3F). */
+/* Convert TINTERVAL to BDR in 20 ms steps, rounded up so nominal ODR does not exceed the request. */
+#define MLX90393_BDR_STEP_MS         20U
+#define MLX90393_BDR_STEP_US         (MLX90393_BDR_STEP_MS * 1000U)
 #define MLX90393_BDR_MAX_CODE        0x3FU
-#define MLX90393_BDR_CODE_RAW(sel)   ((MLX90393_TINTERVAL_US(sel) + 20000U - 1U) / 20000U)
-#define MLX90393_BDR_CODE(sel)       ((MLX90393_BDR_CODE_RAW(sel) > MLX90393_BDR_MAX_CODE) ? \
-                                      MLX90393_BDR_MAX_CODE : MLX90393_BDR_CODE_RAW(sel))
+#define MLX90393_BDR_CODE(sel)       ((MLX90393_TINTERVAL_US(sel) + MLX90393_BDR_STEP_US - 1U) / \
+                                      MLX90393_BDR_STEP_US)
+/* Maximum whole-Hz request accepted for BDR >= 1 (ceil of nominal rate with BDR=1). */
+#define MLX90393_MAX_REQUEST_HZ(sel) \
+	((1000000U + MLX90393_TCONV_BURST_US(sel) + MLX90393_BDR_STEP_US - 1U) / \
+	 (MLX90393_TCONV_BURST_US(sel) + MLX90393_BDR_STEP_US))
 /* Derived wait timeout (ms): expected period (TCONV + TINTERVAL) plus margin. */
 #define MLX90393_US_TO_MS_CEIL(us)   (((us) + 999U) / 1000U)
-#define MLX90393_BDR_STEP_MS         20U
 #define MLX90393_EXPECTED_PERIOD_MS(sel) \
         (MLX90393_US_TO_MS_CEIL(MLX90393_TCONV_BURST_US(sel)) + (MLX90393_BDR_CODE(sel) * MLX90393_BDR_STEP_MS))
 #define MLX90393_WAIT_MARGIN_MS      200U
 #define WAIT_ISR_SIG_TMO_MS          (MLX90393_EXPECTED_PERIOD_MS(MLX90393_BURST_SEL_ZYXT) + MLX90393_WAIT_MARGIN_MS)
-/* Build-time sanity check (typical timing model). */
-#if (MLX90393_BURST_RATE_HZ > MLX90393_MAX_ODR_HZ(MLX90393_BURST_SEL_ZYXT))
-#error "MLX90393_BURST_RATE_HZ exceeds estimated max ODR for current OSR/DIG_FILT and channel selection"
+/* Reject invalid rate requests and BDR codes at build time; continuous burst (BDR=0) is not supported. */
+#if MLX90393_BURST_RATE_HZ == 0U
+#error "MLX90393_BURST_RATE_HZ must be >= 1"
+#elif MLX90393_BURST_RATE_HZ > MLX90393_MAX_REQUEST_HZ(MLX90393_BURST_SEL_ZYXT)
+#error "MLX90393_BURST_RATE_HZ exceeds the supported BDR>=1 range"
+#elif MLX90393_BDR_CODE(MLX90393_BURST_SEL_ZYXT) < 1U || \
+      MLX90393_BDR_CODE(MLX90393_BURST_SEL_ZYXT) > MLX90393_BDR_MAX_CODE
+#error "MLX90393_BDR_CODE must be in the range 1..63"
 #endif
 
 static TaskHandle_t tsk_hndl;
@@ -152,7 +201,10 @@ static gfp_t state_wait_intr(void);
 static BaseType_t isr_clbk(uint32_t status);
 static gfp_t state_error(void);
 static void tsk(void *p);
-static void report_data(struct mlx90393_measure_data *data);
+static void report_data(const struct mlx90393_measure_data *data);
+#if MLX90393_HARDIRON_EN == 1
+static int32_t hardiron_correct_nt(int32_t measured_nt, int32_t offset_nt);
+#endif
 static void mlx90393_build_cfg(uint16_t *cfg0, uint16_t *cfg1, uint16_t *cfg2);
 static void cmd_mlxs(void);
 
@@ -173,19 +225,19 @@ void init_mlx90393_stm(void)
 	mlx->spi.cfg.csel_pin = (1U << 14);
 	init_mlx90393(mlx);
 #if MLX90393_REPORT_FN == 1
-	if (NULL == (report_buf = pvPortMalloc(MLX90393_REPORT_BUF_SIZE))) {
+	if ((report_buf = pvPortMalloc(MLX90393_REPORT_BUF_SIZE)) == NULL) {
 		crit_err_exit(MALLOC_ERROR);
 	}
 	memset(report_buf, 0, MLX90393_REPORT_BUF_SIZE);
 #endif
-	if (NULL == (isr_sig = xSemaphoreCreateBinary())) {
+	if ((isr_sig = xSemaphoreCreateBinary()) == NULL) {
 		crit_err_exit(MALLOC_ERROR);
 	}
 	add_command_noargs("mlxs", cmd_mlxs);
-        if (pdPASS != xTaskCreate(tsk, "MLX90393", MLX90393_TASK_STACK_SIZE, NULL,
-                                  MLX90393_TASK_PRIO, &tsk_hndl)) {
-                crit_err_exit(MALLOC_ERROR);
-        }
+	if (xTaskCreate(tsk, "MLX90393", MLX90393_TASK_STACK_SIZE, NULL,
+	                MLX90393_TASK_PRIO, &tsk_hndl) != pdPASS) {
+		crit_err_exit(MALLOC_ERROR);
+	}
 }
 
 #if MLX90393_REPORT_FN == 1
@@ -288,7 +340,7 @@ static gfp_t state_wait_intr(void)
 	struct mlx90393_measure_data data;
 	int ret;
 
-	if (pdFALSE == xSemaphoreTake(isr_sig, ms_to_os_ticks(WAIT_ISR_SIG_TMO_MS))) {
+	if (xSemaphoreTake(isr_sig, ms_to_os_ticks(WAIT_ISR_SIG_TMO_MS)) == pdFALSE) {
 		gpio_hal_intr_disable(MLX90393_INT_CONT, MLX90393_INT_PIN);
 		xSemaphoreTake(isr_sig, 0);
 		msg(INF, "MLX90393: wait_isr_tmo expired\n");
@@ -296,7 +348,7 @@ static gfp_t state_wait_intr(void)
 		return ((gfp_t) state_error);
 	}
 	delay_us(DLY_AFTER_INTR_US);
-	if (!(gpio_hal_get_input(MLX90393_INT_CONT, MLX90393_INT_PIN) == GPIO_HAL_HIGH)) {
+	if (gpio_hal_get_input(MLX90393_INT_CONT, MLX90393_INT_PIN) != GPIO_HAL_HIGH) {
 		msg(INF, "MLX90393: state_wait_intr() INTR pin unset error\n");
 		stats.intr_pin_low_cnt++;
 		return ((gfp_t) state_error);
@@ -349,63 +401,96 @@ static void tsk(void *p)
 	}
 }
 
+#if MLX90393_REPORT_SI == 1 || MLX90393_REPORT_FN == 1
+/**
+ * format_mag_nt
+ */
+static void format_mag_nt(char *buf, size_t size, int32_t nt)
+{
+	char sign = '+';
+
+	if (nt == INT32_MIN) {
+		snprintf(buf, size, "----.---");
+		return;
+	}
+	if (nt < 0) {
+		sign = '-';
+		nt = -nt;
+	}
+	snprintf(buf, size, "%c%ld.%03ld", sign, (long) (nt / 1000), (long) (nt % 1000));
+}
+#endif
+
+#if MLX90393_HARDIRON_EN == 1
+/**
+ * hardiron_correct_nt
+ */
+static int32_t hardiron_correct_nt(int32_t measured_nt, int32_t offset_nt)
+{
+	int64_t corrected = (int64_t) measured_nt - offset_nt;
+
+	if (corrected <= INT32_MIN || corrected > INT32_MAX) {
+		return (INT32_MIN);
+	}
+	return ((int32_t) corrected);
+}
+#endif
+
 /**
  * report_data
  */
-static void report_data(struct mlx90393_measure_data *data)
+static void report_data(const struct mlx90393_measure_data *data)
 {
-	int32_t x_ut, y_ut, z_ut, t_mc;
+	int32_t x_nt, y_nt, z_nt, t_mc;
 #if (MLX90393_REPORT_SI == 1 || MLX90393_REPORT_FN == 1) && MLX90393_REPORT_MSG_NUM == 1
 	static unsigned int msg_num;
 #endif
 
 	if (data->x_valid) {
-		mlx90393_mag_raw_to_ut(mlx, MLX90393_MEASURE_X, data->x, &x_ut);
+		mlx90393_mag_raw_to_nt(mlx, MLX90393_MEASURE_X, data->x, &x_nt);
 	} else {
-		x_ut = INT32_MIN;
+		x_nt = INT32_MIN;
 	}
 	if (data->y_valid) {
-		mlx90393_mag_raw_to_ut(mlx, MLX90393_MEASURE_Y, data->y, &y_ut);
+		mlx90393_mag_raw_to_nt(mlx, MLX90393_MEASURE_Y, data->y, &y_nt);
 	} else {
-		y_ut = INT32_MIN;
+		y_nt = INT32_MIN;
 	}
 	if (data->z_valid) {
-		mlx90393_mag_raw_to_ut(mlx, MLX90393_MEASURE_Z, data->z, &z_ut);
+		mlx90393_mag_raw_to_nt(mlx, MLX90393_MEASURE_Z, data->z, &z_nt);
 	} else {
-		z_ut = INT32_MIN;
+		z_nt = INT32_MIN;
 	}
 	if (data->t_valid) {
 		mlx90393_temp_raw_to_mc(data->t, &t_mc);
 	} else {
 		t_mc = INT32_MIN;
 	}
+#if MLX90393_HARDIRON_EN == 1
+	if (data->x_valid) {
+		x_nt = hardiron_correct_nt(x_nt, MLX90393_HARDIRON_X_NT);
+	}
+	if (data->y_valid) {
+		y_nt = hardiron_correct_nt(y_nt, MLX90393_HARDIRON_Y_NT);
+	}
+	if (data->z_valid) {
+		z_nt = hardiron_correct_nt(z_nt, MLX90393_HARDIRON_Z_NT);
+	}
+#endif
 #if MLX90393_REPORT_FLIP_X == 1
-	if (x_ut != INT32_MIN) {
-		x_ut = -x_ut;
+	if (x_nt != INT32_MIN) {
+		x_nt = -x_nt;
 	}
 #endif
 #if MLX90393_REPORT_SI == 1 || MLX90393_REPORT_FN == 1
 	enum {
-		FIELD_BUF_M = 12,
+		FIELD_BUF_M = 13,
 		FIELD_BUF_T = 13
 	};
 	char xs[FIELD_BUF_M], ys[FIELD_BUF_M], zs[FIELD_BUF_M], ts[FIELD_BUF_T];
-
-	if (x_ut == INT32_MIN) {
-		snprintf(xs, sizeof(xs), "----");
-	} else {
-		snprintf(xs, sizeof(xs), "%+ld", (long) x_ut);
-	}
-	if (y_ut == INT32_MIN) {
-		snprintf(ys, sizeof(ys), "----");
-	} else {
-		snprintf(ys, sizeof(ys), "%+ld", (long) y_ut);
-	}
-	if (z_ut == INT32_MIN) {
-		snprintf(zs, sizeof(zs), "----");
-	} else {
-		snprintf(zs, sizeof(zs), "%+ld", (long) z_ut);
-	}
+	format_mag_nt(xs, sizeof(xs), x_nt);
+	format_mag_nt(ys, sizeof(ys), y_nt);
+	format_mag_nt(zs, sizeof(zs), z_nt);
 	if (t_mc == INT32_MIN) {
 		snprintf(ts, sizeof(ts), "----.---");
 	} else {
@@ -424,7 +509,8 @@ static void report_data(struct mlx90393_measure_data *data)
 	}
 #if MLX90393_REPORT_FN == 1
 #if MLX90393_REPORT_MSG_NUM == 1
-	snprintf(report_buf, MLX90393_REPORT_BUF_SIZE, "MLX90393 si [%03u]: X=%s Y=%s Z=%s uT T=%s C\n", msg_num, xs, ys, zs, ts);
+	snprintf(report_buf, MLX90393_REPORT_BUF_SIZE,
+		"MLX90393 si [%03u]: X=%s Y=%s Z=%s uT T=%s C\n", msg_num, xs, ys, zs, ts);
 #else
 	snprintf(report_buf, MLX90393_REPORT_BUF_SIZE, "MLX90393 si: X=%s Y=%s Z=%s uT T=%s C\n", xs, ys, zs, ts);
 #endif
@@ -454,8 +540,8 @@ static void report_data(struct mlx90393_measure_data *data)
  */
 static void mlx90393_build_cfg(uint16_t *cfg0, uint16_t *cfg1, uint16_t *cfg2)
 {
-	*cfg0 = mlx90393_cfg0_hallconf_s(MLX90393_HALCONF) | mlx90393_cfg0_gain_sel_s(MLX90393_GAIN_SEL) | mlx90393_cfg0_z_series_s(0U)  |
-		mlx90393_cfg0_bist_s(0U);
+	*cfg0 = mlx90393_cfg0_hallconf_s(MLX90393_HALCONF) | mlx90393_cfg0_gain_sel_s(MLX90393_GAIN_SEL) |
+		mlx90393_cfg0_z_series_s(0U) | mlx90393_cfg0_bist_s(0U);
 	uint8_t bdr = MLX90393_BDR_CODE(MLX90393_BURST_SEL_ZYXT);
 	*cfg1 = mlx90393_cfg1_bdr_s(bdr) | mlx90393_cfg1_burst_sel_zyxt_s(MLX90393_BURST_SEL_ZYXT) |
 		mlx90393_cfg1_tcmp_en_s(MLX90393_TCMP_EN) | mlx90393_cfg1_ext_trg_s(0U) |

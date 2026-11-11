@@ -18,12 +18,9 @@
 
 #include <FreeRTOS.h>
 #include <task.h>
-#include <semphr.h>
-#include <queue.h>
 #include <gentyp.h>
 #include <string.h>
 #include "sysconf.h"
-#include "msgconf.h"
 #include "criterr.h"
 #include "dlycnt.h"
 #include "hwerr.h"
@@ -31,8 +28,8 @@
 
 #define SPI_HAL_SHORT_TRANS SPI_HAL_POLL
 #define SPI_HAL_LONG_TRANS SPI_HAL_DMA
-#define RESET_DELAY_MS 5
-#define CDM_HS_DELAY_MS 15
+#define RESET_DELAY_MS 5U
+#define CDM_HS_DELAY_MS 15U
 #define CDM_EX_DELAY_US 1500
 #define ID_CHECK_VAL 0xABCD
 
@@ -143,7 +140,7 @@ int mlx90393_start_measure(mlx90393 mlx, enum mlx90393_measure_mode mode, unsign
 	case MLX90393_MEASURE_MODE_SINGLE :
 		cmd = MLX90393_CMD_SM;
 		break;
-	default:
+	default :
 		crit_err_exit(BAD_PARAMETER);
 		break;
 	}
@@ -257,6 +254,7 @@ int mlx90393_read_measure_data(mlx90393 mlx, unsigned int measure, struct mlx903
 int mlx90393_exit_mode(mlx90393 mlx)
 {
 	int ret = b1_cmd(mlx, MLX90393_CMD_EX);
+
 	if (ret) {
 		return (ret);
 	}
@@ -279,12 +277,13 @@ int mlx90393_memory_recall(mlx90393 mlx)
 int mlx90393_memory_store(mlx90393 mlx)
 {
 	int ret = b1_cmd(mlx, MLX90393_CMD_HS);
+
 	if (ret) {
 		return (ret);
-	} else {
-		vTaskDelay(ms_to_os_ticks(CDM_HS_DELAY_MS));
-		return (0);
 	}
+	/* Round up to whole ticks, then add one tick for the phase of vTaskDelay(). */
+	vTaskDelay(((CDM_HS_DELAY_MS * configTICK_RATE_HZ + 999U) / 1000U) + 1U);
+	return (0);
 }
 
 /**
@@ -390,7 +389,8 @@ int mlx90393_soft_reset(mlx90393 mlx)
 	if (stat & STAT_RS) {
 		was_rs = TRUE;
 	}
-	vTaskDelay(ms_to_os_ticks(RESET_DELAY_MS));
+	/* Round up to whole ticks, then add one tick for the phase of vTaskDelay(). */
+	vTaskDelay(((RESET_DELAY_MS * configTICK_RATE_HZ + 999U) / 1000U) + 1U);
 	cmd = MLX90393_CMD_EX;
 	stat = 0;
 	if ((ret = spi_hal_xfer(&mlx->spi, SPI_HAL_SHORT_TRANS, &cmd, 1, &stat, 1))) {
@@ -484,22 +484,22 @@ void mlx90393_mag_raw_to_nt(mlx90393 mlx, unsigned int axis, uint16_t raw, int32
 		crit_err_exit(BAD_PARAMETER);
 	}
 	switch (axis) {
-	case MLX90393_MEASURE_X:
+	case MLX90393_MEASURE_X :
 		sens = mlx->sens_x_nT_per_lsb;
 		twos = mlx->x_is_twos_complement;
 		zero = mlx->x_zero_lsb;
 		break;
-	case MLX90393_MEASURE_Y:
+	case MLX90393_MEASURE_Y :
 		sens = mlx->sens_y_nT_per_lsb;
 		twos = mlx->y_is_twos_complement;
 		zero = mlx->y_zero_lsb;
 		break;
-	case MLX90393_MEASURE_Z:
+	case MLX90393_MEASURE_Z :
 		sens = mlx->sens_z_nT_per_lsb;
 		twos = mlx->z_is_twos_complement;
 		zero = mlx->z_zero_lsb;
 		break;
-	default:
+	default :
 		crit_err_exit(BAD_PARAMETER);
 		return;
 	}
@@ -532,6 +532,7 @@ void mlx90393_temp_raw_to_mc(uint16_t raw_t, int32_t *out_mc)
 	int32_t delta = (int32_t) raw_t - 46244;
 	/* delta_mc = delta * 1000 / 45.2 = delta * 10000 / 452 */
 	int64_t num = (int64_t) delta * 10000;
+
 	if (num >= 0) {
 		num += 226; /* rounding */
 	} else {
