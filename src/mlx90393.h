@@ -44,7 +44,7 @@
  *     @c TCMP_EN enabled, the 35C reference table is used because the temperature-compensation
  *     pivot TREF corresponds to 35C. For @c HALLCONF=0x0 the datasheet specifies a sensitivity
  *     scaling factor 98/75, which the driver applies when computing the cache. Other HALLCONF
- *     values are not rejected by the code, but have no dedicated sensitivity scaling.
+ *     values are unsupported and fatal via @c crit_err_exit(BAD_PARAMETER).
  *   - @c TCMP_EN affects the **output coding** (2's complement vs unsigned with a 0uT bias point)
  *     and enables on-chip sensitivity drift compensation. The driver caches per-axis raw format
  *     helpers:
@@ -577,15 +577,16 @@ int mlx90393_soft_reset(mlx90393 mlx);
  * Caches HALLCONF, GAIN_SEL, TCMP_EN, RES_X/Y/Z, OSR, DIG_FILT and OSR2;
  * derives per-axis integer sensitivity in nT/LSB and signed/offset coding.
  * Sensitivity uses the datasheet's 25 C table with TCMP_EN=0 or 35 C table
- * with TCMP_EN=1. For HALLCONF=0x0 it scales by 98/75; other HALLCONF values
- * are not rejected but use the 0xC table without adjustment.
+ * with TCMP_EN=1. For HALLCONF=0x0 it scales by 98/75. Only HALLCONF=0x0
+ * and 0xC are supported.
  *
  * @param[in,out] mlx Initialized sensor handle and conversion cache destination.
  * @return 0 when all three registers were read and the cache is valid;
  *         -EHW or a negative SPI HAL code on a read error.
  * @pre Sensor RAM configuration must already contain the desired settings.
- * @note Invalidates the cache at entry, including on failure. TCMP_EN=1 with
- *       RES_X/Y/Z greater than 1 is rejected fatally during format setup.
+ * @note Invalidates the cache at entry, including on failure. Unsupported
+ *       HALLCONF or TCMP_EN=1 with RES_X/Y/Z greater than 1 is fatal via
+ *       @c crit_err_exit(BAD_PARAMETER).
  * @note Blocking SPI/DMA operation; task context only; no internal locking.
  */
 int mlx90393_update_conv_cache(mlx90393 mlx);

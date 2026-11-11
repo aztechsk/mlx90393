@@ -80,6 +80,8 @@
 #ifndef MLX90393_TCMP_EN
 #define MLX90393_TCMP_EN 0U
 #endif
+/* Neutral sensor offset with temperature compensation enabled (unsigned coding). */
+#define MLX90393_TCMP_ZERO_OFFSET 0x8000U
 #define MLX90393_HALCONF 0xCU
 #if MLX90393_OSR < 0 || MLX90393_OSR > 3U
 #error "MLX90393_OSR must be in the range 0..3"
@@ -90,8 +92,20 @@
 #if MLX90393_OSR2 < 0 || MLX90393_OSR2 > 3U
 #error "MLX90393_OSR2 must be in the range 0..3"
 #endif
-#if MLX90393_TCMP_EN != 0U
-#error "MLX90393_SINGLE_MODE supports only MLX90393_TCMP_EN=0"
+#if MLX90393_TCMP_EN != 0U && MLX90393_TCMP_EN != 1U
+#error "MLX90393_TCMP_EN must be 0 or 1"
+#endif
+#if MLX90393_REPORT_SI != 0 && MLX90393_REPORT_SI != 1
+#error "MLX90393_REPORT_SI must be 0 or 1"
+#endif
+#if MLX90393_REPORT_FN != 0 && MLX90393_REPORT_FN != 1
+#error "MLX90393_REPORT_FN must be 0 or 1"
+#endif
+#if MLX90393_REPORT_FLIP_X != 0 && MLX90393_REPORT_FLIP_X != 1
+#error "MLX90393_REPORT_FLIP_X must be 0 or 1"
+#endif
+#if MLX90393_REPORT_MSG_NUM != 0 && MLX90393_REPORT_MSG_NUM != 1
+#error "MLX90393_REPORT_MSG_NUM must be 0 or 1"
 #endif
 #ifndef MLX90393_HARDIRON_EN
 #error "MLX90393_HARDIRON_EN must be defined in sysconf.h"
@@ -279,6 +293,17 @@ static gfp_t state_chip_cfg(void)
 	if ((ret = mlx90393_reg_write(mlx, MLX90393_CFG0_REG, cfg0_w))) {
 		goto err;
 	}
+#if MLX90393_TCMP_EN == 1
+	if ((ret = mlx90393_reg_write(mlx, MLX90393_OFFSET_X_REG, MLX90393_TCMP_ZERO_OFFSET))) {
+		goto err;
+	}
+	if ((ret = mlx90393_reg_write(mlx, MLX90393_OFFSET_Y_REG, MLX90393_TCMP_ZERO_OFFSET))) {
+		goto err;
+	}
+	if ((ret = mlx90393_reg_write(mlx, MLX90393_OFFSET_Z_REG, MLX90393_TCMP_ZERO_OFFSET))) {
+		goto err;
+	}
+#endif
 	if ((ret = mlx90393_reg_write(mlx, MLX90393_CFG1_REG, cfg1))) {
 		goto err;
 	}

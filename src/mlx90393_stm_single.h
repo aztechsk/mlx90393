@@ -33,9 +33,11 @@
  * registers and refreshes the LL conversion cache:
  * - CFG0: HALLCONF=0xC, GAIN_SEL from the range profile, no BIST or
  *   Z_SERIES; preserves ANA_RESERVED_LOW trimming bits.
- * - CFG1: BDR=0 (unused in SM mode), BURST_SEL=0xF, TCMP_EN=0,
+ * - CFG1: BDR=0 (unused in SM mode), BURST_SEL=0xF, configured TCMP_EN,
  *   EXT_TRIG=0, WOC_DIFF=0, COMM_MODE=2 (SPI only), TRIG_INT_SEL=1.
  * - CFG2: OSR, DIG_FILT, OSR2 and RES_X/Y/Z for the range profile.
+ * - OFFSET_X/Y/Z: neutral value 0x8000 only when TCMP_EN=1;
+ *   with TCMP_EN=0 the reset defaults are left unchanged.
  *
  * BDR=0 does not enable continuous burst: the STM issues only SM commands,
  * never SB. Every SM command selects T, X, Y and Z (mask 0xF). After a
@@ -54,8 +56,10 @@
  * - MLX90393_OSR: magnetic ADC oversampling 0..3 (default 0).
  * - MLX90393_DIG_FILT: digital filtering 0..7 (default 4).
  * - MLX90393_OSR2: temperature oversampling 0..3 (default 0).
- * - MLX90393_TCMP_EN: only 0 is supported (default 0); selecting 1
- *   causes a build error. The on-chip OFFSET_X/Y/Z registers are unused.
+ * - MLX90393_TCMP_EN: 0 (default) or 1; enables on-chip magnetic
+ *   sensitivity temperature compensation using factory-trimmed coefficients.
+ *   With TCMP_EN=1, neutral OFFSET_X/Y/Z registers are programmed to 0x8000;
+ *   with TCMP_EN=0, they are not written.
  * - MLX90393_HARDIRON_EN: required, either 0 or 1. If enabled,
  *   MLX90393_HARDIRON_X_NT, _Y_NT and _Z_NT are required int32_t
  *   offsets. The STM subtracts offsets from converted nT before
@@ -72,6 +76,13 @@
  * STM cannot guarantee the deadline when reporting, SPI transfers or
  * higher-priority tasks consume the remaining execution time.
  *
+ * With TCMP_EN=0, RES=0/1 magnetic RAW values are signed two's-complement
+ * values and use the 25 C sensitivity reference. With TCMP_EN=1, they are
+ * unsigned values centered at 0x8000 and use the 35 C sensitivity reference.
+ * The common LL conversion cache handles both formats; measurement timing
+ * is unchanged because the STM already reads T/X/Y/Z in each conversion.
+ * The separate software hard-iron correction works in both TCMP modes.
+ *
  * @section mlx90393_single_timing Scheduling and interrupt handling
  *
  * The task uses vTaskDelayUntil() and an absolute tick schedule rather
@@ -81,6 +92,8 @@
  * measurements to catch up. The "mlxs" diagnostic command reports
  * sm_start_cnt, sm_read_cnt and missed_period_cnt, as well as ISR
  * timeouts, unexpected DRDY levels, resets and optional callback errors.
+ * The legacy diagnostic field intr_pin_low counts both unexpected DRDY HIGH
+ * before SM (expected LOW) and DRDY LOW after ISR wakeup (expected HIGH).
  *
  * Before each SM command the STM drains the old semaphore, verifies
  * DRDY LOW, enables the level-high GPIO interrupt, then sends SM. The

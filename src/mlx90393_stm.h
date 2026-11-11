@@ -34,26 +34,27 @@
  * and after an error-triggered reset:
  * - CFG0: HALLCONF=0xC, Z_SERIES=0, BIST=0 and GAIN_SEL from the selected
  *   range preset. Existing ANA_RESERVED_LOW trimming bits are preserved.
- * - CFG1: BURST_SEL=0xF (all T/X/Y/Z), TCMP_EN=0,
+ * - CFG1: BURST_SEL=0xF (all T/X/Y/Z), configured TCMP_EN,
  *   EXT_TRIG=0, WOC_DIFF=0, COMM_MODE=2 (SPI only), TRIG_INT_SEL=1,
  *   BDR derived from the requested data rate and conversion time.
  * - CFG2: configured OSR, DIG_FILT and OSR2; RES_X/Y/Z from the
  *   selected range preset.
+ * - OFFSET_X/Y/Z: 0x8000 (neutral offset) only when TCMP_EN=1;
+ *   with TCMP_EN=0 the existing reset defaults are left unchanged.
  *
  * The following build-time settings may be supplied by sysconf.h:
  * - MLX90393_OSR (0..3; default 0): magnetic ADC oversampling.
  * - MLX90393_DIG_FILT (0..7; default 4): magnetic digital filtering.
  * - MLX90393_OSR2 (0..3; default 0): temperature ADC oversampling.
- * - MLX90393_TCMP_EN (must be 0; default 0): on-chip temperature
- *   compensation is not supported by this STM. Selecting 1 fails at build
- *   time; a different acquisition mode may support it in the future.
+ * - MLX90393_TCMP_EN (0/1; default 0): on-chip magnetic sensitivity
+ *   temperature compensation. The sensor uses its factory-trimmed
+ *   SENS_TC_LT/HT coefficients; these are not changed by the STM.
  *
  * With HALLCONF=0xC, OSR/DIG_FILT combinations (0,0), (0,1) and (1,0)
  * are not permitted by the datasheet. The STM rejects these and all
  * out-of-range values at build time. Increasing oversampling or filtering
  * generally reduces noise but increases the conversion time, changing the
- * BDR code and the achievable sample rate. TCMP_EN remains fixed at zero
- * in this STM.
+ * BDR code and the achievable sample rate.
  *
  * MLX90393_RANGE_PROFILE is selected at build time (sysconf.h override):
  * - MLX90393_RANGE_5MT (default): GAIN_SEL=7, RES_X/Y/Z=0; XY +/-4.9 mT.
@@ -67,12 +68,19 @@
  * (ABA-1xx). Thus the +/-50 mT digital preset does not guarantee
  * unsaturated measurements to +/-50 mT on every sensor variant.
  * With TCMP_EN=0 and the supported RES=0/1 settings, magnetic readings
- * use signed two's-complement coding.
+ * use signed two's-complement coding. With TCMP_EN=1 the same resolutions
+ * use unsigned coding centered at 0x8000; the existing low-level conversion
+ * cache handles this change and uses 35 C rather than 25 C sensitivity
+ * reference values. Conversion timing is unchanged because T/X/Y/Z are
+ * already included in every burst.
  *
  * @section mlx90393_stm_hardiron Software hard-iron correction
  *
- * The STM does not program the sensor's OFFSET_X/Y/Z registers. Instead,
- * it optionally subtracts fixed per-axis offsets from converted magnetic
+ * With TCMP_EN=1, the STM writes 0x8000 to the sensor's OFFSET_X/Y/Z
+ * registers before enabling compensation, as required for neutral offsets
+ * in the unsigned encoding. This does not calibrate physical magnetic bias.
+ * With TCMP_EN=0, those registers are not written. Independently, the STM
+ * optionally subtracts fixed per-axis offsets from converted magnetic
  * values, in integer nanotesla (nT), before reporting. Configure in
  * sysconf.h:
  * - MLX90393_HARDIRON_EN (required; 0=disabled, 1=enabled).
@@ -87,7 +95,7 @@
  * Both logger and report callback receive corrected values. Temperature,
  * sensor RAW data and the low-level driver are unaffected. These offsets
  * compensate a constant field bias, not scale, cross-axis or soft-iron
- * errors. The STM always uses TCMP_EN=0.
+ * errors. Software hard-iron correction is independent of TCMP_EN.
  *
  * @section mlx90393_stm_timing Burst rate and measurement cycle
  *
@@ -140,8 +148,9 @@
  * The dedicated FreeRTOS task runs the following cycle:
  * - Soft reset (EX, RT, EX), test SPI using the USER1 register, and set up
  *   the board's level-high GPIO interrupt input.
- * - Write CFG0/1/2, refresh the magnetic conversion cache, send SB with
- *   channel mask 0xF (T, X, Y and Z), and enable the GPIO interrupt.
+ * - Write CFG0/1/2 (and neutral OFFSET_X/Y/Z when TCMP_EN=1), refresh
+ *   the magnetic conversion cache, send SB with channel mask 0xF
+ *   (T, X, Y and Z), and enable the GPIO interrupt.
  * - A data-ready interrupt disables further GPIO interrupts and gives a
  *   binary semaphore from ISR context. The task waits for the semaphore
  *   with a timeout based on the expected burst period plus 200 ms.
@@ -152,9 +161,10 @@
  *   software hard-iron offsets, invert X, and report signed values with
  *   three fractional digits in uT and degrees C.
  *   Re-enable the GPIO interrupt for the next sample.
- * - On a timeout, read error or other state-machine failure, delay 5000 ms,
- *   then restart the reset/probe/configuration sequence. Diagnostic counters
- *   can be displayed by the registered terminal command "mlxs".
+ * - On a timeout, read error or other state-machine failure, disable the
+ *   DRDY GPIO interrupt, drain any pending semaphore and delay 5000 ms.
+ *   Before starting a new SB, discard stale signals again, then restart
+ *   the interrupt-driven acquisition. Counters are available via "mlxs".
  *
  * @note The STM does not guarantee lossless acquisition of every burst
  *       conversion. If readout or reporting is delayed beyond the sensor's
@@ -189,7 +199,7 @@
  * Initializes the SPI HAL descriptor, allocates the optional report buffer,
  * creates a binary interrupt semaphore, registers the "mlxs" command, and
  * creates the fixed FreeRTOS MLX90393 task. The task itself performs sensor
- * reset, probe, configuration and continuous burst acquisition.
+ * reset, probe, configuration and periodic burst acquisition.
  *
  * @pre Call once during system startup from task context, not from an ISR.
  *      The platform SPI/GPIO HAL, board configuration and FreeRTOS allocation

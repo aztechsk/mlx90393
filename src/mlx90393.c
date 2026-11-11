@@ -243,7 +243,6 @@ int mlx90393_read_measure_data(mlx90393 mlx, unsigned int measure, struct mlx903
 	if (measure & MLX90393_MEASURE_Z) {
 		data->z = (dary[idx] << 8) | dary[idx + 1];
 		data->z_valid = 1;
-		idx += 2;
 	}
 	return (ret);
 }
@@ -430,6 +429,9 @@ int mlx90393_update_conv_cache(mlx90393 mlx)
 	mlx->cfg1 = cfg1;
 	mlx->cfg2 = cfg2;
 	mlx->hallconf = mlx90393_cfg0_hallconf_r(cfg0);
+	if (mlx->hallconf != 0xC && mlx->hallconf != 0x0) {
+		crit_err_exit(BAD_PARAMETER);
+	}
 	mlx->gain_sel = mlx90393_cfg0_gain_sel_r(cfg0);
 	mlx->tcmp_en = mlx90393_cfg1_tcmp_en_r(cfg1);
 

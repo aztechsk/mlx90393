@@ -88,6 +88,8 @@
 #ifndef MLX90393_TCMP_EN
 #define MLX90393_TCMP_EN        0U
 #endif
+/* Neutral sensor offset with temperature compensation enabled (unsigned coding). */
+#define MLX90393_TCMP_ZERO_OFFSET 0x8000U
 /* Hall plate spinning rate adjustment. */
 #define MLX90393_HALCONF        0xCU
 /* Reject unsupported field values and HALLCONF=0xC filter combinations. */
@@ -100,8 +102,20 @@
 #if MLX90393_OSR2 < 0 || MLX90393_OSR2 > 3
 #error "MLX90393_OSR2 must be in the range 0..3"
 #endif
-#if MLX90393_TCMP_EN != 0
-#error "MLX90393_INTR_MODE supports only MLX90393_TCMP_EN=0"
+#if MLX90393_TCMP_EN != 0 && MLX90393_TCMP_EN != 1
+#error "MLX90393_TCMP_EN must be 0 or 1"
+#endif
+#if MLX90393_REPORT_SI != 0 && MLX90393_REPORT_SI != 1
+#error "MLX90393_REPORT_SI must be 0 or 1"
+#endif
+#if MLX90393_REPORT_FN != 0 && MLX90393_REPORT_FN != 1
+#error "MLX90393_REPORT_FN must be 0 or 1"
+#endif
+#if MLX90393_REPORT_FLIP_X != 0 && MLX90393_REPORT_FLIP_X != 1
+#error "MLX90393_REPORT_FLIP_X must be 0 or 1"
+#endif
+#if MLX90393_REPORT_MSG_NUM != 0 && MLX90393_REPORT_MSG_NUM != 1
+#error "MLX90393_REPORT_MSG_NUM must be 0 or 1"
 #endif
 #ifndef MLX90393_HARDIRON_EN
 #error "MLX90393_HARDIRON_EN must be defined in sysconf.h"
@@ -313,6 +327,17 @@ static gfp_t state_chip_cfg(void)
 	if ((ret = mlx90393_reg_write(mlx, MLX90393_CFG0_REG, cfg0_w))) {
 		goto err;
 	}
+#if MLX90393_TCMP_EN == 1
+	if ((ret = mlx90393_reg_write(mlx, MLX90393_OFFSET_X_REG, MLX90393_TCMP_ZERO_OFFSET))) {
+		goto err;
+	}
+	if ((ret = mlx90393_reg_write(mlx, MLX90393_OFFSET_Y_REG, MLX90393_TCMP_ZERO_OFFSET))) {
+		goto err;
+	}
+	if ((ret = mlx90393_reg_write(mlx, MLX90393_OFFSET_Z_REG, MLX90393_TCMP_ZERO_OFFSET))) {
+		goto err;
+	}
+#endif
 	if ((ret = mlx90393_reg_write(mlx, MLX90393_CFG1_REG, cfg1))) {
 		goto err;
 	}
@@ -322,6 +347,8 @@ static gfp_t state_chip_cfg(void)
 	if ((ret = mlx90393_update_conv_cache(mlx))) {
 		goto err;
 	}
+	gpio_hal_intr_disable(MLX90393_INT_CONT, MLX90393_INT_PIN);
+	xSemaphoreTake(isr_sig, 0);
 	if ((ret = mlx90393_start_measure(mlx, MLX90393_MEASURE_MODE_BURST, MLX90393_BURST_SEL_ZYXT))) {
 		goto err;
 	}
@@ -385,6 +412,8 @@ static BaseType_t isr_clbk(uint32_t status)
 static gfp_t state_error(void)
 {
 	msg(INF, "MLX90393: resetting state machine after error\n");
+	gpio_hal_intr_disable(MLX90393_INT_CONT, MLX90393_INT_PIN);
+	xSemaphoreTake(isr_sig, 0);
 	vTaskDelay(ms_to_os_ticks(RESET_STM_TMO_MS));
 	stats.stm_rst_cnt++;
 	return ((gfp_t) state_sw_reset);
