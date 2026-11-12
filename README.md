@@ -85,10 +85,10 @@ These dependencies are intentionally kept outside this repository and must be pr
 The three STMs are alternative application-facing acquisition engines. Each
 owns the SPI sensor handle, a dedicated FreeRTOS task and the DRDY interrupt.
 The client chooses **one** STM at build time, calls its initialization function
-once during startup and receives completed samples through logging and/or an
-optional formatted-text callback. It does not issue sensor commands for every
-measurement. The STMs do not provide a binary sample callback or a sample
-queue; applications needing direct RAW access can use `mlx90393.h` instead.
+once during startup and receives completed samples through logging and/or
+optional text and binary callbacks. It does not issue sensor commands for every
+measurement. The STMs have no sample queue; the binary callback exposes both
+original sensor RAW and driver-processed nT/mC values.
 Do not access the same sensor concurrently through the LL API while an STM
 is active: the STM owns its sensor handle and command sequence. For direct
 LL use, the application provides its own scheduling and serialization.
@@ -180,7 +180,7 @@ Changing its compile-time settings requires rebuilding the firmware.
 
 ### Receiving measurements
 
-The STM offers two optional text output paths configured in `sysconf.h`:
+The STM offers three independent optional output paths configured in `sysconf.h`:
 
 - `MLX90393_REPORT_SI=1`: send each formatted sample to the project message
   logger (`msg(INF, ...)`). This is useful for tests but may limit throughput.
@@ -188,12 +188,15 @@ The STM offers two optional text output paths configured in `sysconf.h`:
   `mlx90393_stm_set_report_fn(boolean_t (*)(const char *))`. The callback
   receives each formatted sample after a successful `RM` read. The same
   function name is supplied by the **selected** STM only.
+- `MLX90393_REPORT_SAMPLE_FN=1`: build the binary sample callback API
+  `mlx90393_stm_set_sample_fn(boolean_t (*)(const struct mlx90393_sample *))`.
+  Each sample contains unchanged sensor RAW X/Y/Z/T, their validity flags,
+  processed X/Y/Z in nT and converted temperature in mC.
 
-Both paths may be enabled at once. With both disabled, acquisition still
-runs but the STM does not expose its samples to the application. With
-`REPORT_FN=1`, no callback is delivered until one is registered; passing
-`NULL` unregisters it. Register during startup, ideally before creating
-the STM task:
+All three output paths may be enabled at once. With all disabled, acquisition
+still runs without exposing samples to the application. A callback receives
+no data until registered; passing `NULL` unregisters it. Register during
+startup, ideally before creating the STM task:
 
 ```c
 /* Example for the selected Single STM, with MLX90393_REPORT_FN=1. */
@@ -220,6 +223,65 @@ blocking I/O or lengthy processing in the callback, especially in
 Continuous Burst mode. Returning `FALSE` increments `report_fn_err` in
 `mlxs` but does not stop measurement or reset the STM. Callback registration
 is not synchronized with concurrent reporting.
+
+For the binary callback, define `MLX90393_REPORT_SAMPLE_FN=1` and use the
+same registration function with every STM mode. The structure is declared
+in `mlx90393.h`:
+
+```c
+struct mlx90393_sample {
+	struct mlx90393_measure_data raw;
+	int32_t x_nt;
+	int32_t y_nt;
+	int32_t z_nt;
+	int32_t t_mc;
+};
+```
+
+The STM fills the structure after a successful `RM`. Magnetic nT values
+have already undergone any configured software hard-iron correction and
+`REPORT_FLIP_X`, just like formatted text output. Temperature is converted
+to mC without magnetic corrections. `raw` is always unchanged: with
+`TCMP_EN=0` magnetic words use signed two's-complement coding; with
+`TCMP_EN=1` they are unsigned with a zero at `0x8000` for the STM's
+current configuration. A converted value of `INT32_MIN` means invalid or
+unrepresentable; check `raw.x_valid`, `.y_valid`, `.z_valid` and `.t_valid`
+for channel validity. A valid RAW axis with `INT32_MIN` in its nT field
+indicates hard-iron correction overflow.
+
+```c
+/* Single STM example: create mag_queue during startup with item size
+ * sizeof(struct mlx90393_sample). */
+#include <queue.h>
+#include "mlx90393_stm_single.h"
+
+extern QueueHandle_t mag_queue;
+
+/**
+ * sample_report
+ */
+static boolean_t sample_report(const struct mlx90393_sample *sample)
+{
+	return (xQueueSend(mag_queue, sample, 0) == pdPASS);
+}
+
+/**
+ * start_magnetometer
+ */
+void start_magnetometer(void)
+{
+	mlx90393_stm_set_sample_fn(sample_report);
+	init_mlx90393_stm_single();
+}
+```
+
+The binary callback executes synchronously in the acquisition task, not
+in an ISR. Its pointer is only valid during the call: copy the structure
+or use a nonblocking queue send. A `FALSE` return increments
+`sample_fn_err` in `mlxs` without resetting the STM. No lossless capture
+is guaranteed, especially in Continuous Burst mode; slow callbacks can
+cause lost conversions or missed scheduled periods. Binary samples do
+not contain a timestamp or a sequence counter.
 
 With `MLX90393_REPORT_MSG_NUM=1`, a report looks like:
 
@@ -251,6 +313,7 @@ The following settings apply to **all three** STM implementations:
 | `MLX90393_HARDIRON_X_NT`, `_Y_NT`, `_Z_NT` | Signed int32 nT; required only when hard-iron is enabled | Independent fixed offsets in native sensor axes. |
 | `MLX90393_REPORT_SI` | 0 or 1 | Enable formatted message logging. |
 | `MLX90393_REPORT_FN` | 0 or 1 | Enable formatted report callback. |
+| `MLX90393_REPORT_SAMPLE_FN` | 0 or 1; default 0 if undefined | Enable RAW plus processed SI sample callback. |
 | `MLX90393_REPORT_FLIP_X` | 0 or 1 | Invert the reported X axis after offset correction. |
 | `MLX90393_REPORT_MSG_NUM` | 0 or 1 | Include rolling `[000]`..`[999]` report index. |
 | `MLX90393_TASK_STACK_SIZE`, `MLX90393_TASK_PRIO` | Project-defined | Acquisition task resources and scheduling priority. |
@@ -407,8 +470,11 @@ For Periodic Single, the legacy `intr_pin_low` field counts two unexpected
 DRDY states: HIGH before issuing `SM` (expected LOW), or LOW after the
 interrupt wakeup (expected HIGH). The name is retained for compatibility.
 
-When callback reporting is built in, `report_fn_err` is also displayed:
+When text callback reporting is built in, `report_fn_err` is displayed:
 it counts callbacks returning `FALSE`, not missing sensor conversions.
+With the binary callback enabled, `sample_fn_err` similarly counts its
+`FALSE` returns and is shown independently.
+
 The Continuous Burst `drdy_low` counter is not, by itself, a fatal error;
 a brief LOW strobe may occur while a new conversion replaces an older
 result. A zero error count and continuous report indices do not prove

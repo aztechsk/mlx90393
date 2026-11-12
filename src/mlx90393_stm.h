@@ -11,6 +11,13 @@
 #include <gentyp.h>
 #include "sysconf.h"
 
+#ifndef MLX90393_REPORT_SAMPLE_FN
+#define MLX90393_REPORT_SAMPLE_FN 0
+#endif
+#if MLX90393_REPORT_SAMPLE_FN == 1
+#include "mlx90393.h"
+#endif
+
 /**
  * @file mlx90393_stm.h
  * @brief FreeRTOS state machine for periodic MLX90393 SPI burst measurements.
@@ -92,8 +99,8 @@
  * applied afterwards. Invalid samples remain invalid; if a corrected
  * result cannot fit in the report's signed int32_t range (INT32_MIN is
  * reserved for invalid data), it is reported as an invalid field.
- * Both logger and report callback receive corrected values. Temperature,
- * sensor RAW data and the low-level driver are unaffected. These offsets
+ * Both logger and report callbacks receive corrected values. Temperature,
+ * original sensor RAW data and the low-level driver are unaffected. These offsets
  * compensate a constant field bias, not scale, cross-axis or soft-iron
  * errors. Software hard-iron correction is independent of TCMP_EN.
  *
@@ -175,13 +182,15 @@
  * The report formats magnetic values from the low-level conversion to whole
  * nT, preserving 0.001 uT display increments without floating-point math.
  * This is numeric resolution, not guaranteed sensor accuracy. For precision
- * analysis, raw values remain available through the low-level driver.
+ * analysis, the sample callback also delivers original RAW values.
  *
  * @section mlx90393_stm_reporting Reporting configuration
  *
  * The build configuration (included via sysconf.h) controls these flags:
  * - MLX90393_REPORT_SI: report formatted samples through the message logger.
- * - MLX90393_REPORT_FN: include a report callback and its formatting buffer.
+ * - MLX90393_REPORT_FN: include a text callback and its formatting buffer.
+ * - MLX90393_REPORT_SAMPLE_FN: optional (default 0) binary sample callback
+ *   with RAW and corrected nT/mC values.
  * - MLX90393_REPORT_FLIP_X: reverse the sign of X after hard-iron
  *   correction (if enabled).
  * - MLX90393_REPORT_MSG_NUM: include a 000..999 rolling sample number.
@@ -230,6 +239,30 @@ void init_mlx90393_stm(void);
  *       avoid changing the callback while measurements are running.
  */
 void mlx90393_stm_set_report_fn(boolean_t (*report_fn)(const char *));
+#endif
+
+#if MLX90393_REPORT_SAMPLE_FN == 1
+/**
+ * @brief Register or clear the RAW plus converted-sample callback.
+ *
+ * Called synchronously by the acquisition task after each successful RM
+ * read and after all configured software corrections. @c sample->raw
+ * retains original sensor codes and validity flags; @c x_nt, @c y_nt and
+ * @c z_nt contain converted nT values after optional hard-iron subtraction
+ * and X sign inversion. @c t_mc contains converted temperature in mC.
+ * INT32_MIN marks an invalid or unrepresentable converted value.
+ * A FALSE return increments sample_fn_err_cnt; it does not reset the STM.
+ * NULL disables callback delivery.
+ *
+ * @param[in] sample_fn Callback pointer or NULL to disable delivery.
+ * @pre Register during startup before the task starts reporting. Changing
+ *      the callback while acquisition is running is not synchronized.
+ * @note Called in FreeRTOS task context, not ISR context. The pointer is
+ *       valid only until return: copy the sample to retain it. Keep callback
+ *       execution bounded/nonblocking to avoid missed sensor conversions.
+ * @note Only the selected STM provides this symbol.
+ */
+void mlx90393_stm_set_sample_fn(boolean_t (*sample_fn)(const struct mlx90393_sample *));
 #endif
 
 #endif

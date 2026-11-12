@@ -11,6 +11,13 @@
 #include <gentyp.h>
 #include "sysconf.h"
 
+#ifndef MLX90393_REPORT_SAMPLE_FN
+#define MLX90393_REPORT_SAMPLE_FN 0
+#endif
+#if MLX90393_REPORT_SAMPLE_FN == 1
+#include "mlx90393.h"
+#endif
+
 /**
  * @file mlx90393_stm_cont.h
  * @brief FreeRTOS MLX90393 continuous-burst state machine using the DRDY interrupt.
@@ -61,7 +68,9 @@
  *   programmed at TCMP_EN=1 are neutral, not a hard-iron calibration.
  * - MLX90393_TASK_STACK_SIZE, MLX90393_TASK_PRIO: FreeRTOS task settings.
  * - MLX90393_REPORT_SI, MLX90393_REPORT_FN, MLX90393_REPORT_FLIP_X and
- *   MLX90393_REPORT_MSG_NUM: identical reporting options to other STMs.
+ *   MLX90393_REPORT_MSG_NUM: identical text reporting options to other STMs.
+ * - MLX90393_REPORT_SAMPLE_FN: optional (default 0) callback for original
+ *   RAW words and corrected nT/mC values.
  *
  * The HALLCONF=0xC restrictions on OSR/DIG_FILT are enforced at compile
  * time. With TCMP_EN=0, RES=0/1 magnetic RAW data are signed and use the
@@ -110,8 +119,9 @@
  * @section mlx90393_cont_reporting Reporting
  *
  * Readings are converted to nT and mC; optional software hard-iron
- * offsets and X sign inversion are applied before formatted output.
- * Reports contain signed X/Y/Z in uT with three decimals and temperature
+ * offsets and X sign inversion are applied before reporting. The
+ * binary sample callback receives original RAW and corrected nT/mC data.
+ * Text reports contain signed X/Y/Z in uT with three decimals and temperature
  * in degrees C with three decimals, as in the other MLX90393 STMs.
  * Avoid per-sample serial logging or slow callbacks when attempting to
  * capture the maximum continuous-burst throughput (~249 Hz by default).
@@ -151,6 +161,30 @@ void init_mlx90393_stm_cont(void);
  *       synchronized with concurrent callback execution.
  */
 void mlx90393_stm_set_report_fn(boolean_t (*report_fn)(const char *));
+#endif
+
+#if MLX90393_REPORT_SAMPLE_FN == 1
+/**
+ * @brief Register or clear the RAW plus converted-sample callback.
+ *
+ * Called synchronously by the acquisition task after each successful RM
+ * read and after all configured software corrections. @c sample->raw
+ * retains original sensor codes and validity flags; @c x_nt, @c y_nt and
+ * @c z_nt contain converted nT values after optional hard-iron subtraction
+ * and X sign inversion. @c t_mc contains converted temperature in mC.
+ * INT32_MIN marks an invalid or unrepresentable converted value.
+ * A FALSE return increments sample_fn_err_cnt; it does not reset the STM.
+ * NULL disables callback delivery.
+ *
+ * @param[in] sample_fn Callback pointer or NULL to disable delivery.
+ * @pre Register during startup before the task starts reporting. Changing
+ *      the callback while acquisition is running is not synchronized.
+ * @note Called in FreeRTOS task context, not ISR context. The pointer is
+ *       valid only until return: copy the sample to retain it. Keep callback
+ *       execution bounded/nonblocking to avoid missed sensor conversions.
+ * @note Only the selected STM provides this symbol.
+ */
+void mlx90393_stm_set_sample_fn(boolean_t (*sample_fn)(const struct mlx90393_sample *));
 #endif
 
 #endif

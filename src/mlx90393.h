@@ -414,6 +414,32 @@ struct mlx90393_measure_data {
 };
 
 /**
+ * @struct mlx90393_sample
+ * @brief STM measurement with original RAW codes and processed SI values.
+ *
+ * The selected STM fills this structure after a successful RM read.
+ * @c raw preserves the unmodified sensor words and validity flags.
+ * @c x_nt, @c y_nt and @c z_nt are converted to nanotesla, with optional
+ * software hard-iron offsets subtracted and REPORT_FLIP_X applied.
+ * @c t_mc is temperature in milli-degrees Celsius; it is not affected by
+ * magnetic corrections. The STM uses the same converted values for its
+ * formatted-text reports.
+ *
+ * @note INT32_MIN marks an unavailable converted field (invalid RAW channel
+ *       or hard-iron correction overflow). Consult @c raw.*_valid to
+ *       distinguish an invalid RAW channel from a correction overflow.
+ * @note The STM supplies this structure by pointer in task context. The
+ *       client must copy it during the callback to retain it afterwards.
+ */
+struct mlx90393_sample {
+	struct mlx90393_measure_data raw;
+	int32_t x_nt;
+	int32_t y_nt;
+	int32_t z_nt;
+	int32_t t_mc;
+};
+
+/**
  * @brief Initialize one MLX90393 handle and its SPI HAL device.
  *
  * Calls @c spi_hal_dev_init() and invalidates the conversion cache. This

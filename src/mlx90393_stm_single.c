@@ -101,6 +101,9 @@
 #if MLX90393_REPORT_FN != 0 && MLX90393_REPORT_FN != 1
 #error "MLX90393_REPORT_FN must be 0 or 1"
 #endif
+#if MLX90393_REPORT_SAMPLE_FN != 0 && MLX90393_REPORT_SAMPLE_FN != 1
+#error "MLX90393_REPORT_SAMPLE_FN must be 0 or 1"
+#endif
 #if MLX90393_REPORT_FLIP_X != 0 && MLX90393_REPORT_FLIP_X != 1
 #error "MLX90393_REPORT_FLIP_X must be 0 or 1"
 #endif
@@ -157,6 +160,9 @@ static SemaphoreHandle_t isr_sig;
 static boolean_t (*report_clbk)(const char *);
 static char *report_buf;
 #endif
+#if MLX90393_REPORT_SAMPLE_FN == 1
+static boolean_t (*sample_clbk)(const struct mlx90393_sample *);
+#endif
 
 static struct {
 	unsigned int sm_start_cnt;
@@ -167,6 +173,9 @@ static struct {
 	unsigned int intr_pin_low_cnt;
 #if MLX90393_REPORT_FN == 1
 	unsigned int report_fn_err_cnt;
+#endif
+#if MLX90393_REPORT_SAMPLE_FN == 1
+	unsigned int sample_fn_err_cnt;
 #endif
 } stats;
 
@@ -226,6 +235,16 @@ void init_mlx90393_stm_single(void)
 void mlx90393_stm_set_report_fn(boolean_t (*report_fn)(const char *))
 {
 	report_clbk = report_fn;
+}
+#endif
+
+#if MLX90393_REPORT_SAMPLE_FN == 1
+/**
+ * mlx90393_stm_set_sample_fn
+ */
+void mlx90393_stm_set_sample_fn(boolean_t (*sample_fn)(const struct mlx90393_sample *))
+{
+	sample_clbk = sample_fn;
 }
 #endif
 
@@ -511,6 +530,20 @@ static void report_data(const struct mlx90393_measure_data *data)
 		x_nt = -x_nt;
 	}
 #endif
+#if MLX90393_REPORT_SAMPLE_FN == 1
+	if (sample_clbk) {
+		struct mlx90393_sample sample = {
+			.raw = *data,
+			.x_nt = x_nt,
+			.y_nt = y_nt,
+			.z_nt = z_nt,
+			.t_mc = t_mc
+		};
+		if (!sample_clbk(&sample)) {
+			stats.sample_fn_err_cnt++;
+		}
+	}
+#endif
 #if MLX90393_REPORT_SI == 1 || MLX90393_REPORT_FN == 1
 	enum {
 		FIELD_BUF_M = 13,
@@ -598,6 +631,9 @@ static void cmd_mlxs(void)
 	    stats.stm_rst_cnt, stats.report_fn_err_cnt);
 #else
 	msg(INF, "MLX90393 cnt: stm_rst=%u\n", stats.stm_rst_cnt);
+#endif
+#if MLX90393_REPORT_SAMPLE_FN == 1
+	msg(INF, "MLX90393 cnt: sample_fn_err=%u\n", stats.sample_fn_err_cnt);
 #endif
 	vTaskPrioritySet(NULL, pr);
 }

@@ -11,6 +11,13 @@
 #include <gentyp.h>
 #include "sysconf.h"
 
+#ifndef MLX90393_REPORT_SAMPLE_FN
+#define MLX90393_REPORT_SAMPLE_FN 0
+#endif
+#if MLX90393_REPORT_SAMPLE_FN == 1
+#include "mlx90393.h"
+#endif
+
 /**
  * @file mlx90393_stm_single.h
  * @brief FreeRTOS periodic single-measurement MLX90393 state machine using DRDY.
@@ -68,6 +75,8 @@
  *   stack and priority, from project configuration.
  * - MLX90393_REPORT_SI, MLX90393_REPORT_FN, MLX90393_REPORT_FLIP_X,
  *   MLX90393_REPORT_MSG_NUM: same text reporting options as burst STM.
+ * - MLX90393_REPORT_SAMPLE_FN: optional (default 0) callback for original
+ *   RAW samples and converted nT/mC values after software corrections.
  *
  * HALLCONF=0xC forbids (OSR,DIG_FILT)=(0,0), (0,1), (1,0). Invalid
  * settings and periods shorter than the nominal conversion plus 140 us
@@ -118,7 +127,9 @@
  * as signed uT with three fractional digits. Temperature is printed in
  * degrees C with three fractional digits. The callback receives the
  * same NUL-terminated text as the logger, with invalid fields shown as
- * "----.---". It is invoked synchronously from the acquisition task.
+ * "----.---". A separate sample callback receives the original RAW words
+ * alongside the same corrected nT/mC values, without text formatting.
+ * Both callbacks execute synchronously in the acquisition task.
  *
  * Reference: Melexis MLX90393 datasheet Rev. 012 (18 November 2025),
  * sections 12, 14.2 and 15.
@@ -158,6 +169,30 @@ void init_mlx90393_stm_single(void);
  *       STM defines this symbol.
  */
 void mlx90393_stm_set_report_fn(boolean_t (*report_fn)(const char *));
+#endif
+
+#if MLX90393_REPORT_SAMPLE_FN == 1
+/**
+ * @brief Register or clear the RAW plus converted-sample callback.
+ *
+ * Called synchronously by the acquisition task after each successful RM
+ * read and after all configured software corrections. @c sample->raw
+ * retains original sensor codes and validity flags; @c x_nt, @c y_nt and
+ * @c z_nt contain converted nT values after optional hard-iron subtraction
+ * and X sign inversion. @c t_mc contains converted temperature in mC.
+ * INT32_MIN marks an invalid or unrepresentable converted value.
+ * A FALSE return increments sample_fn_err_cnt; it does not reset the STM.
+ * NULL disables callback delivery.
+ *
+ * @param[in] sample_fn Callback pointer or NULL to disable delivery.
+ * @pre Register during startup before the task starts reporting. Changing
+ *      the callback while acquisition is running is not synchronized.
+ * @note Called in FreeRTOS task context, not ISR context. The pointer is
+ *       valid only until return: copy the sample to retain it. Keep callback
+ *       execution bounded/nonblocking to avoid missed sensor conversions.
+ * @note Only the selected STM provides this symbol.
+ */
+void mlx90393_stm_set_sample_fn(boolean_t (*sample_fn)(const struct mlx90393_sample *));
 #endif
 
 #endif
